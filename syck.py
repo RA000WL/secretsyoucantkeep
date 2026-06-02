@@ -413,6 +413,85 @@ RULES: list[Rule] = [
          "HIGH",
          re.compile(r"(?i)\bftp[_\-]?(?:password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\",]{6,}['\"]?")),
 
+    # ── Data / Analytics ──────────────────────
+    Rule("databricks_token",
+         "CRITICAL",
+         re.compile(r"\bdapi[A-Za-z0-9]{30,}\b")),
+    Rule("snowflake_url",
+         "LOW",
+         re.compile(r"\b[a-z0-9_]+\.snowflakecomputing\.com\b")),
+
+    # ── CRM / Sales ───────────────────────────
+    Rule("hubspot_api_key",
+         "CRITICAL",
+         re.compile(r"\bpat-(?:eu1|na1)-[A-Za-z0-9]{30,}\b")),
+
+    # ── Monitoring / Observability ────────────
+    Rule("grafana_service_account_token",
+         "CRITICAL",
+         re.compile(r"\bglsa_[A-Za-z0-9]{20,}_[A-F0-9]{8}\b")),
+    Rule("pagerduty_api_token",
+         "HIGH",
+         re.compile(r"\bu\+[A-Za-z0-9_\-]{20,}\b")),
+    Rule("sonarqube_token",
+         "HIGH",
+         re.compile(r"\bsqu_[A-Za-z0-9]{30,}\b")),
+    Rule("wakatime_api_key",
+         "MEDIUM",
+         re.compile(r"\b[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\b")),
+
+    # ── Productivity / Design ─────────────────
+    Rule("notion_integration_token",
+         "CRITICAL",
+         re.compile(r"\bsecret_[A-Za-z0-9]{40,}\b")),
+    Rule("figma_personal_token",
+         "CRITICAL",
+         re.compile(r"\bfigd_[A-Za-z0-9]{20,}\b")),
+
+    # ── Social Media ──────────────────────────
+    Rule("facebook_access_token",
+         "HIGH",
+         re.compile(r"\bEAAC[A-Za-z0-9]{30,}\b")),
+    Rule("twitter_bearer_token",
+         "HIGH",
+         re.compile(r"\bAAAA[A-Za-z0-9%_\-]{45,}\b")),
+
+    # ── CI/CD ─────────────────────────────────
+    Rule("gitlab_ci_job_token",
+         "HIGH",
+         re.compile(r"\bglcbt-[A-Za-z0-9\-_]{20,}\b")),
+
+    # ── Hosting / CDN ─────────────────────────
+    Rule("netlify_personal_token",
+         "HIGH",
+         re.compile(r"\bnfpt_[A-Za-z0-9]{40,}\b")),
+
+    # ── Cloud (non-AWS) ───────────────────────
+    Rule("alibaba_cloud_access_key",
+         "HIGH",
+         re.compile(r"\bLTAI[A-Za-z0-9]{20,}\b")),
+
+    # ── Payment / Fintech ─────────────────────
+    Rule("plaid_client_id",
+         "MEDIUM",
+         re.compile(r"\bplaid_client_[A-Za-z0-9]{24,}\b")),
+    Rule("plaid_secret",
+         "MEDIUM",
+         re.compile(r"\bplaid_secret_[A-Za-z0-9]{30,}\b")),
+    Rule("coinbase_api_key",
+         "HIGH",
+         re.compile(r"\bcoinbase[_\-]?(?:api|secret)[_\-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}['\"]?")),
+
+    # ── Media / CDN ───────────────────────────
+    Rule("cloudinary_url",
+         "MEDIUM",
+         re.compile(r"cloudinary://[^:\s\"'`]+:[^@\s\"'`]+@[a-z]+\b")),
+
+    # ── Push Notifications ────────────────────
+    Rule("firebase_fcm_key",
+         "HIGH",
+         re.compile(r"\bAAAA[A-Za-z0-9_\-]{50,}\b")),
+
     # ── Generic patterns ─────────────────────
     Rule("bearer_token",
          "HIGH",
@@ -842,7 +921,7 @@ def scan_file(path: Path, min_severity: str = "LOW",
                 continue
             for match in rule.pattern.finditer(line):
                 raw = match.group(0)
-                if rule.name in ("generic_secret", "dotenv_secret", "basic_auth_header"):
+                if rule.name in ("generic_secret", "dotenv_secret", "basic_auth_header", "wakatime_api_key"):
                     candidate = raw.split("=", 1)[-1].split(":", 1)[-1].strip().strip("'\"")
                     if not likely_secret(candidate, min_len=12, min_entropy=3.2):
                         continue
@@ -1403,7 +1482,11 @@ EXAMPLES:
     p.add_argument("--no-entropy", action="store_true",
                    help="Disable high-entropy token sweep")
     p.add_argument("--decode-base64", action="store_true",
-                   help="Decode base64 strings and re-scan for secrets")
+                   default=True,
+                   help=argparse.SUPPRESS)  # backward compat, now default-on
+    p.add_argument("--no-decode-base64", action="store_false",
+                   dest="decode_base64",
+                   help="Disable base64 decode and re-scan of found strings")
     p.add_argument("--follow-symlinks", action="store_true",
                    help="Follow symlinks")
     p.add_argument("--no-skip-binary", action="store_true",

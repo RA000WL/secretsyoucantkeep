@@ -540,7 +540,7 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
                severity: str = "LOW", fmt: str = "text",
                redact: bool = False, workers: int = 4,
                max_file_size: str = "5M",
-               decode_base64: bool = False,
+               decode_base64: bool = True,
                syck_cmd: list[str] | None = None,
                dry_run: bool = False) -> Path | None:
     """Stage 5: scan downloaded files with syck.
@@ -569,8 +569,8 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
             "--max-file-size", max_file_size]
     if redact:
         args.append("--redact")
-    if decode_base64:
-        args.append("--decode-base64")
+    if not decode_base64:
+        args.append("--no-decode-base64")
     if dry_run:
         print(color(f"DRY: {' '.join(str(a) for a in args)}", GREY))
         return out
@@ -736,7 +736,7 @@ shortcuts:
   -es  --enum-subs          -dw  --download-workers -mfs --max-file-size
   -js  --js-only            -aj  --all-files          -jsd --js-depth
   -hl  --headless            -sm  --extract-source-maps      -xs  --extract-scripts
-  --decode-base64                 --header NAME:VALUE      --cookie COOKIE
+  --no-decode-base64               --header NAME:VALUE      --cookie COOKIE
 
 examples:
   syck-hunt target.com
@@ -825,8 +825,11 @@ examples:
     scan.add_argument("-so", "--scan-only", metavar="PATH",
                       help="Skip recon, run syck directly on PATH "
                            "(file or dir)")
-    scan.add_argument("--decode-base64", action="store_true",
-                      help="Also decode base64 strings and re-scan for secrets")
+    scan.add_argument("--decode-base64", action="store_true", default=True,
+                      help=argparse.SUPPRESS)  # backward compat
+    scan.add_argument("--no-decode-base64", action="store_false",
+                      dest="decode_base64",
+                      help="Disable base64 decode and re-scan")
     scan.add_argument("-w", "--workers", type=int, default=4,
                       dest="syck_workers",
                       help="syck --workers (default: 4)")
