@@ -58,6 +58,27 @@ fi
 echo "Installing into $PREFIX …"
 mkdir -p "$PREFIX"
 
+# ── default config ─────────────────────────────────────────────
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/syck"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+mkdir -p "$CONFIG_DIR"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo "[·] $CONFIG_FILE already exists — keeping it"
+else
+    cat > "$CONFIG_FILE" <<'CONFIG_EOF'
+{
+    "workers": 10,
+    "max-file-size": "5M",
+    "decode-base64": true,
+    "progress": true,
+    "redact": false,
+    "no-color": false
+}
+CONFIG_EOF
+    echo "[+] created $CONFIG_FILE"
+fi
+
 write_shim() {
     local target="$1"
     local script="$2"
