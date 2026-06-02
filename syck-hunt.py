@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import http.client
 import json
 import re
 import shutil
@@ -288,19 +289,19 @@ def stage_httpx(subs_file: Path, out_dir: Path,
 
 def stage_katana(hosts_file: Path, out_dir: Path, depth: int = 2,
                  rate_limit: float = 5.0, concurrency: int = 10,
+                 headless: bool = False,
                  dry_run: bool = False) -> Path | None:
     """Stage 3: crawl the live hosts."""
     out = out_dir / "03_urls.txt"
     args = ["katana", "-list", str(hosts_file), "-silent",
             "-d", str(depth), "-o", str(out), "-kf", "all",
             "-concurrency", str(concurrency)]
-    if 0 < rate_limit <= 1:
-        # katana: -rate-limit is INTEGER seconds per host.  For any
-        # rate faster than 1 rps the value would round to 0 (and
-        # katana rejects non-integer strings with 'parse error'),
-        # so we only pass it for slow scans.  For faster scans the
-        # downloader's token-bucket per-second limit does the
-        # throttling.
+    if headless:
+        args.append("-headless")
+    if rate_limit > 0 and rate_limit < 1:
+        # katana: -rate-limit is INTEGER seconds per host.  For rates
+        # >= 1 req/s the interval would round to 0, so we skip it and
+        # let the downloader's token bucket handle throttling.
         args += ["-rate-limit", str(round(1.0 / rate_limit))]
     rc = run_cmd(args, dry_run)
     if dry_run:
@@ -351,7 +352,8 @@ def _download_one(url: str, dest_dir: Path,
                     return None
                 dest.write_bytes(data)
                 return dest
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+                     http.client.IncompleteRead) as exc:
                 if attempt < retries:
                     delay = 2 ** attempt
                     if USE_COLOR:
@@ -508,6 +510,7 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
                severity: str = "LOW", fmt: str = "text",
                redact: bool = False, workers: int = 4,
                max_file_size: str = "5M",
+               decode_base64: bool = False,
                syck_cmd: list[str] | None = None,
                dry_run: bool = False) -> Path | None:
     """Stage 5: scan downloaded files with syck.
@@ -536,6 +539,8 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
             "--max-file-size", max_file_size]
     if redact:
         args.append("--redact")
+    if decode_base64:
+        args.append("--decode-base64")
     if dry_run:
         print(color(f"DRY: {' '.join(str(a) for a in args)}", GREY))
         return out
@@ -700,8 +705,8 @@ shortcuts:
   -so  --scan-only          -kc  --katana-conc      -nd  --no-download
   -es  --enum-subs          -dw  --download-workers -mfs --max-file-size
   -js  --js-only            -aj  --all-files          -jsd --js-depth
-  -sm  --extract-source-maps      -xs  --extract-scripts
-  --header NAME:VALUE      --cookie COOKIE
+  -hl  --headless            -sm  --extract-source-maps      -xs  --extract-scripts
+  --decode-base64                 --header NAME:VALUE      --cookie COOKIE
 
 examples:
   syck-hunt target.com
@@ -754,6 +759,9 @@ examples:
     crawl = ap.add_argument_group("crawl tuning")
     crawl.add_argument("-d", "--depth", type=int, default=2,
                        help="Katana crawl depth (default: 2)")
+    crawl.add_argument("-hl", "--headless", action="store_true",
+                       help="Use katana's headless browser for JS-rendered "
+                            "links (discovers SPA routes like /#/score-board)")
     crawl.add_argument("-mf", "--max-files", type=int, default=200,
                        help="Max files to download (default: 200)")
     crawl.add_argument("-dw", "--download-workers", type=int, default=10,
@@ -787,6 +795,8 @@ examples:
     scan.add_argument("-so", "--scan-only", metavar="PATH",
                       help="Skip recon, run syck directly on PATH "
                            "(file or dir)")
+    scan.add_argument("--decode-base64", action="store_true",
+                      help="Also decode base64 strings and re-scan for secrets")
     scan.add_argument("-w", "--workers", type=int, default=4,
                       dest="syck_workers",
                       help="syck --workers (default: 4)")
@@ -873,10 +883,21 @@ def main(argv: list[str] | None = None) -> int:
             redact=args.redact,
             workers=args.syck_workers,
             max_file_size=args.max_file_size,
+            decode_base64=args.decode_base64,
             syck_cmd=syck_cmd,
             dry_run=args.dry_run,
         )
         return _summarise(out_dir, report, args.dry_run)
+
+    # Diagnostic: show effective rate limit
+    rl = args.rate_limit
+    if rl > 0:
+        katana_rl = f"{round(1.0/rl)}s" if rl < 1 else "unlimited"
+        print(color(f"[*] rate limit: {rl} req/s "
+                    f"(httpx: {int(1000/rl)}ms, katana: {katana_rl}, "
+                    f"downloader: {1000/rl:.0f}ms)", CYAN))
+    else:
+        print(color("[*] rate limit: unlimited", CYAN))
 
     # Mode 2: full recon → download → syck
     if args.enum_subs:
@@ -906,6 +927,7 @@ def main(argv: list[str] | None = None) -> int:
                         depth=args.depth,
                         rate_limit=args.rate_limit,
                         concurrency=args.katana_conc,
+                        headless=args.headless,
                         dry_run=args.dry_run)
     if not urls and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
@@ -961,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
         redact=args.redact,
         workers=args.syck_workers,
         max_file_size=args.max_file_size,
+        decode_base64=args.decode_base64,
         syck_cmd=syck_cmd,
         dry_run=args.dry_run,
     )
