@@ -323,7 +323,8 @@ def _safe_name(url: str) -> str:
 
 def _download_one(url: str, dest_dir: Path,
                   limiter: RateLimiter, host_limiter: HostLimiter,
-                  timeout: int = 20) -> Path | None:
+                  timeout: int = 20, retries: int = 2,
+                  extra_headers: dict[str, str] | None = None) -> Path | None:
     name = _safe_name(url)
     dest = dest_dir / name
     i = 1
@@ -332,32 +333,58 @@ def _download_one(url: str, dest_dir: Path,
         dest = dest_dir / f"{stem}_{i}{suf}"
         i += 1
     host = urlparse(url).netloc or "unknown"
-    host_limiter.acquire(host)
-    try:
-        limiter.wait()
-        req = urllib.request.Request(url, headers={"User-Agent": "syck-hunt/1.0"})
+
+    # Build request headers
+    headers = {"User-Agent": "syck-hunt/1.0"}
+    if extra_headers:
+        headers.update(extra_headers)
+
+    for attempt in range(retries + 1):
+        host_limiter.acquire(host)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read()
-            if not data:
+            limiter.wait()
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = resp.read()
+                if not data:
+                    return None
+                dest.write_bytes(data)
+                return dest
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                if attempt < retries:
+                    delay = 2 ** attempt
+                    if USE_COLOR:
+                        print(color(f"  [retry {attempt + 1}/{retries}] {url} "
+                                    f"failed ({exc}), waiting {delay}s…", YELL),
+                              file=sys.stderr)
+                    time.sleep(delay)
+                    continue
                 return None
-            dest.write_bytes(data)
-            return dest
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-            return None
-    finally:
-        host_limiter.release(host)
+        finally:
+            host_limiter.release(host)
+    return None
+
+
+_HTML_SCRIPT_RE = re.compile(
+    r"""<script[^>]*>\s*(//\s*<!\[CDATA\[)?\s*(.*?)\s*(//\]\]>)?\s*</script>""",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
                    workers: int = 10, js_only: bool = True,
                    rate_limit: float = 5.0, max_per_host: int = 2,
-                   js_depth: int = 0,
+                   js_depth: int = 0, extract_scripts: bool = False,
+                   extra_headers: dict[str, str] | None = None,
                    dry_run: bool = False) -> Path | None:
     """Stage 4: download JS files for offline scanning.
 
     When *js_depth* > 0, downloaded JS files are parsed for import/require
     URLs and those are fetched recursively up to *js_depth* levels deep.
+
+    When *extract_scripts* is True, HTML files are parsed for inline
+    ``<script>`` blocks and saved alongside downloaded JS.
     """
     files_dir = out_dir / "downloaded"
     files_dir.mkdir(exist_ok=True)
@@ -413,7 +440,8 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
         batch_ok = 0
         batch_downloaded: list[Path] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as exe:
-            futs = {exe.submit(_download_one, u, files_dir, limiter, host_limiter): u
+            futs = {exe.submit(_download_one, u, files_dir, limiter, host_limiter,
+                               extra_headers=extra_headers): u
                     for u in current_batch}
             for fut in concurrent.futures.as_completed(futs):
                 u = futs[fut]
@@ -434,9 +462,46 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
     if url_map and not dry_run:
         (files_dir / "url_map.json").write_text(json.dumps(url_map, indent=2), encoding="utf-8")
 
+    # Extract inline <script> blocks from downloaded HTML files
+    if extract_scripts and not dry_run and all_ok > 0:
+        _extract_html_scripts(files_dir)
+
     if dry_run:
         return files_dir if urls else None
     return files_dir if all_ok > 0 else None
+
+
+def _extract_html_scripts(files_dir: Path) -> int:
+    """Find HTML files in *files_dir*, extract ``<script>`` bodies, and save
+    them as ``<original>.inline-N.js`` alongside the originals.
+
+    Returns the number of script blocks extracted.
+    """
+    extracted = 0
+    for html_file in sorted(files_dir.rglob("*")):
+        if not html_file.is_file():
+            continue
+        if html_file.suffix.lower() not in (".html", ".htm"):
+            continue
+        try:
+            content = html_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for idx, match in enumerate(_HTML_SCRIPT_RE.finditer(content), start=1):
+            script_body = match.group(2)
+            if not script_body or not script_body.strip():
+                continue
+            # Write alongside the HTML file
+            stem = html_file.stem
+            dest = html_file.with_name(f"{stem}.inline-{idx}.js")
+            try:
+                dest.write_text(script_body, encoding="utf-8")
+                extracted += 1
+            except OSError:
+                continue
+    if extracted:
+        print(color(f"[+] extracted {extracted} inline <script> block(s) from HTML", GREEN))
+    return extracted
 
 
 def stage_syck(targets: Iterable[Path], out_dir: Path,
@@ -501,6 +566,7 @@ def stage_extract_source_maps(
     rate_limit: float = 5.0,
     max_per_host: int = 2,
     timeout: int = 20,
+    extra_headers: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> Path | None:
     """Extract original sources from source maps found in downloaded files.
@@ -532,6 +598,9 @@ def stage_extract_source_maps(
 
     limiter = RateLimiter(rate_limit)
     host_limiter = HostLimiter(max_per_host)
+    headers = {"User-Agent": "syck-hunt/1.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     map_count = 0
     source_count = 0
 
@@ -554,9 +623,7 @@ def stage_extract_source_maps(
                 host_limiter.acquire(host)
                 try:
                     limiter.wait()
-                    req = urllib.request.Request(
-                        map_ref, headers={"User-Agent": "syck-hunt/1.0"},
-                    )
+                    req = urllib.request.Request(map_ref, headers=headers)
                     with urllib.request.urlopen(req, timeout=timeout) as resp:
                         source_map = json.loads(resp.read())
                 except Exception:
@@ -575,9 +642,7 @@ def stage_extract_source_maps(
                     host_limiter.acquire(host)
                     try:
                         limiter.wait()
-                        req = urllib.request.Request(
-                            resolved, headers={"User-Agent": "syck-hunt/1.0"},
-                        )
+                        req = urllib.request.Request(resolved, headers=headers)
                         with urllib.request.urlopen(req, timeout=timeout) as resp:
                             source_map = json.loads(resp.read())
                     except Exception:
@@ -635,7 +700,8 @@ shortcuts:
   -so  --scan-only          -kc  --katana-conc      -nd  --no-download
   -es  --enum-subs          -dw  --download-workers -mfs --max-file-size
   -js  --js-only            -aj  --all-files          -jsd --js-depth
-  -sm  --extract-source-maps
+  -sm  --extract-source-maps      -xs  --extract-scripts
+  --header NAME:VALUE      --cookie COOKIE
 
 examples:
   syck-hunt target.com
@@ -682,6 +748,8 @@ examples:
     stages.add_argument("-aj", "--all-files", dest="js_only",
                         action="store_false",
                         help="Download all crawled URLs, not just .js")
+    stages.add_argument("-xs", "--extract-scripts", action="store_true",
+                        help="Extract inline <script> blocks from HTML files and scan them")
 
     crawl = ap.add_argument_group("crawl tuning")
     crawl.add_argument("-d", "--depth", type=int, default=2,
@@ -696,6 +764,13 @@ examples:
                        metavar="N",
                        help="Recursively follow JS imports up to depth N "
                             "(default: 0 — no recursion)")
+    crawl.add_argument("--header", action="append", default=[],
+                       metavar="NAME:VALUE",
+                       help="Add a custom HTTP header to all requests "
+                            "(repeatable, e.g. --header 'Authorization: Bearer x')")
+    crawl.add_argument("--cookie", metavar="COOKIE",
+                       help="Cookie header value for all requests "
+                            "(e.g. 'session=abc123')")
 
     rate = ap.add_argument_group("rate limiting")
     rate.add_argument("-rl", "--rate-limit", type=float, default=50.0,
@@ -764,6 +839,15 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.output_dir) / target_label
     out_dir.mkdir(parents=True, exist_ok=True)
     print(color(f"[*] run directory: {out_dir}", CYAN))
+
+    # Build extra HTTP headers from --header and --cookie
+    extra_headers: dict[str, str] = {}
+    for hdr in getattr(args, "header", []) or []:
+        if ":" in hdr:
+            key, val = hdr.split(":", 1)
+            extra_headers[key.strip()] = val.strip()
+    if getattr(args, "cookie", None):
+        extra_headers["Cookie"] = args.cookie
 
     # In scan-only mode the recon tools (subfinder/httpx/katana) aren't
     # needed — just print the tool check and continue.  In full-recon
@@ -838,6 +922,8 @@ def main(argv: list[str] | None = None) -> int:
         rate_limit=args.rate_limit,
         max_per_host=args.max_concurrent,
         js_depth=args.js_depth,
+        extract_scripts=args.extract_scripts,
+        extra_headers=extra_headers or None,
         dry_run=args.dry_run,
     )
     if not files and not args.dry_run:
@@ -850,6 +936,7 @@ def main(argv: list[str] | None = None) -> int:
             files, out_dir,
             rate_limit=args.rate_limit,
             max_per_host=args.max_concurrent,
+            extra_headers=extra_headers or None,
             dry_run=args.dry_run,
         )
 

@@ -9,6 +9,7 @@ a bug bounty report. Use --redact to mask them in the output.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -668,8 +669,134 @@ def _is_minified_js(path: Path, content: str) -> bool:
     return nlines <= 3 or avg > 2000
 
 
+# ──────────────────────────────────────────────
+# Base64-decoding pipeline
+# ──────────────────────────────────────────────
+
+_BASE64_CANDIDATE_RE = re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}(?!\w)")
+_BASE64_MIN_LEN = 32
+
+
+def _decode_and_rescan(line: str, path: Path, lineno: int,
+                       rules: list[Rule], min_rank: int,
+                       add_fn) -> None:
+    """Find base64 strings in *line*, decode them, and re-run rules on the
+    decoded plaintext.  Findings are tagged ``base64_<rulename>``."""
+    for match in _BASE64_CANDIDATE_RE.finditer(line):
+        raw = match.group(0)
+        # Quick sanity: base64 length must be valid
+        if len(raw) < _BASE64_MIN_LEN:
+            continue
+        try:
+            decoded_bytes = base64.b64decode(raw)
+        except Exception:
+            continue
+        try:
+            decoded_text = decoded_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        # Skip if the decoded output is binary or entirely non-printable
+        printable = sum(1 for ch in decoded_text if ch.isprintable() or ch in "\n\r\t")
+        if printable < len(decoded_text) // 2:
+            continue
+
+        for rule in rules:
+            if _RULE_RANK.get(rule.name, 99) > min_rank:
+                continue
+            for m in rule.pattern.finditer(decoded_text):
+                secret = m.group(0)
+                add_fn(Finding(
+                    file=str(path),
+                    line=lineno,
+                    rule=f"base64_{rule.name}",
+                    severity=rule.severity,
+                    secret=secret,
+                    context=f"base64 decoded: {decoded_text[:200]}",
+                    entropy=shannon_entropy(secret),
+                ))
+
+
+# ──────────────────────────────────────────────
+# JSON-aware scanning
+# ──────────────────────────────────────────────
+
+# Keys whose string values should always be treated as potential secrets
+_JSON_SECRET_KEYS = re.compile(
+    r"(?i)^(?:"
+    r"password|passwd|pwd|secret|token|api[_-]?key|apikey|"
+    r"access[_-]?key|access[_-]?token|auth[_-]?token|auth[_-]?key|"
+    r"client[_-]?secret|client[_-]?id|"
+    r"private[_-]?key|ssh[_-]?key|"
+    r"encryption[_-]?key|signing[_-]?key|"
+    r"bearer|credential|refresh[_-]?token|"
+    r"session[_-]?key|secret[_-]?key|master[_-]?key"
+    r")$"
+)
+
+_JSON_MAX_SCAN_SIZE = 10 * 1024 * 1024  # skip files larger than 10 MB
+
+
+def _scan_json_value(value: object, key_path: str, path: Path,
+                     rules: list[Rule], min_rank: int, add_fn) -> None:
+    """Recursively walk a parsed JSON tree and flag secret-like values."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            kp = f"{key_path}.{k}" if key_path else k
+            _scan_json_value(v, kp, path, rules, min_rank, add_fn)
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            _scan_json_value(v, f"{key_path}[{i}]", path, rules, min_rank, add_fn)
+    elif isinstance(value, str):
+        if not value:
+            return
+        key_name = key_path.rsplit(".", 1)[-1] if "." in key_path else key_path
+        # If the key itself looks secret-worthy, flag the value (entropy gate)
+        if _JSON_SECRET_KEYS.match(key_name):
+            ent = shannon_entropy(value)
+            if len(value) >= 8 and not value.isdigit() and ent >= 3.0:
+                add_fn(Finding(
+                    file=str(path),
+                    line=0,
+                    rule=f"json_{key_name}",
+                    severity="MEDIUM",
+                    secret=value[:500],
+                    context=f"json key: {key_path}",
+                    entropy=ent,
+                ))
+        # Also run all rule patterns against the value
+        for rule in rules:
+            if _RULE_RANK.get(rule.name, 99) > min_rank:
+                continue
+            for m in rule.pattern.finditer(value):
+                secret = m.group(0)
+                add_fn(Finding(
+                    file=str(path),
+                    line=0,
+                    rule=f"json_{rule.name}",
+                    severity=rule.severity,
+                    secret=secret,
+                    context=f"json key: {key_path}",
+                    entropy=shannon_entropy(secret),
+                ))
+
+
+def _scan_json_file(path: Path, content: str, rules: list[Rule],
+                    min_rank: int, add_fn) -> None:
+    """Parse *content* as JSON and run structure-aware secret scanning."""
+    if not path.suffix.lower() == ".json":
+        return
+    if len(content) > _JSON_MAX_SCAN_SIZE:
+        return
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return
+    _scan_json_value(data, "", path, rules, min_rank, add_fn)
+
+
 def scan_file(path: Path, min_severity: str = "LOW",
-              high_entropy_scan: bool = True) -> list[Finding]:
+              high_entropy_scan: bool = True,
+              decode_base64: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -729,6 +856,13 @@ def scan_file(path: Path, min_severity: str = "LOW",
                         context=line.strip()[:200],
                         entropy=shannon_entropy(token),
                     ))
+
+        # Base64 decode + re-scan (opt-in)
+        if decode_base64:
+            _decode_and_rescan(line, path, lineno, RULES, min_rank, add)
+
+    # JSON-aware scanning (automatic for .json files)
+    _scan_json_file(path, content, RULES, min_rank, add)
 
     return findings
 
@@ -817,6 +951,7 @@ def scan_paths(
     follow_symlinks: bool = False,
     min_severity: str = "LOW",
     high_entropy_scan: bool = True,
+    decode_base64: bool = False,
     exclude_patterns: list[re.Pattern[str]] | None = None,
     workers: int = DEFAULT_WORKERS,
     max_file_size: int = DEFAULT_MAX_FILE_SIZE,
@@ -832,11 +967,11 @@ def scan_paths(
     findings: list[Finding] = []
     if workers <= 1 or len(files) <= 1:
         for f in files:
-            findings.extend(scan_file(f, min_severity, high_entropy_scan))
+            findings.extend(scan_file(f, min_severity, high_entropy_scan, decode_base64))
     else:
         with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = {
-                exe.submit(scan_file, f, min_severity, high_entropy_scan): f
+                exe.submit(scan_file, f, min_severity, high_entropy_scan, decode_base64): f
                 for f in files
             }
             for fut in as_completed(futures):
@@ -1226,12 +1361,17 @@ EXAMPLES:
                    help=argparse.SUPPRESS)  # deprecated: secrets are now shown by default
     p.add_argument("--no-entropy", action="store_true",
                    help="Disable high-entropy token sweep")
+    p.add_argument("--decode-base64", action="store_true",
+                   help="Decode base64 strings and re-scan for secrets")
     p.add_argument("--follow-symlinks", action="store_true",
                    help="Follow symlinks")
     p.add_argument("--no-skip-binary", action="store_true",
                    help="Attempt to scan binary files")
     p.add_argument("--exclude", metavar="REGEX", action="append", default=[],
                    help="Exclude paths matching this regex (repeatable)")
+    p.add_argument("--exclude-file", metavar="FILE",
+                   help="Read exclude patterns from a file (one regex per line, "
+                        "# comments and blank lines ignored)")
     p.add_argument("--workers", type=int, default=DEFAULT_WORKERS, metavar="N",
                    help=f"Parallel workers for file scanning (default: {DEFAULT_WORKERS})")
     p.add_argument("--max-file-size", type=parse_size,
@@ -1302,6 +1442,18 @@ def main(argv: list[str]) -> int:
                 targets.append(fetched)
 
     try:
+        # Merge --exclude-file patterns into --exclude list
+        if args.exclude_file:
+            try:
+                with open(args.exclude_file) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            args.exclude.append(line)
+            except OSError as e:
+                print(color(f"[!] failed to read --exclude-file: {e}", RED), file=sys.stderr)
+                return 2
+
         exclude_patterns = [re.compile(pat) for pat in args.exclude] if args.exclude else None
         redact_secrets = args.redact or bool(args.show_secrets)
 
@@ -1311,6 +1463,7 @@ def main(argv: list[str]) -> int:
             follow_symlinks=args.follow_symlinks,
             min_severity=args.severity,
             high_entropy_scan=not args.no_entropy,
+            decode_base64=args.decode_base64,
             exclude_patterns=exclude_patterns,
             workers=max(1, args.workers),
             max_file_size=args.max_file_size,

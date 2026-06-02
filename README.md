@@ -101,6 +101,12 @@ stage manually or feed intermediate files into other tools.
   payments, AI providers, SaaS, infra, crypto, and databases
 - **Custom rules** — load your own patterns from a JSON file with `--rules`
   (or replace built-in rules entirely with `--rules-only`)
+- **Base64 decode pipeline** — decode base64 strings and re-scan for
+  hidden secrets with `--decode-base64`
+- **JSON-aware scanning** — parses JSON files and flags secret values
+  under known secret keys (automatic, no flag needed)
+- **Exclude patterns from file** — maintain a `.syckignore`-style file
+  with `--exclude-file`
 - **High-entropy token sweep** — catches undocumented secret formats
 - **Parallel file scanning** with `ThreadPoolExecutor` (configurable workers)
 - **6 output formats**: text, JSON, SARIF (GitHub Code Scanning), Markdown,
@@ -123,6 +129,12 @@ stage manually or feed intermediate files into other tools.
   N levels deep with `--js-depth N`
 - **Source map extraction** — extract and scan original sources from
   source maps with `--extract-source-maps` / `-sm`
+- **Inline script extraction** — extract `<script>` blocks from HTML
+  files and scan them with `--extract-scripts` / `-xs`
+- **Custom HTTP headers** — pass cookies or auth headers to access
+  gated JS endpoints with `--header` and `--cookie`
+- **Retry with backoff** — transient download failures retry up to 2
+  times with exponential backoff (transparent, no flag needed)
 - Dry-run (`-dr`) and tool-check (`-ct`) modes
 - Pass-through of every `syck` option (`-s`, `-f`, `-r`, `-w`)
 
@@ -222,6 +234,17 @@ syck . --exclude "test|mock|spec"   # skip noisy paths
 syck . --no-entropy                 # disable the high-entropy sweep
 ```
 
+### Advanced scanning
+
+```bash
+syck . --decode-base64                    # decode base64 strings and re-scan
+syck . --exclude-file .syckignore          # load skip patterns from a file
+```
+
+Deep JSON scanning is automatic — syck parses `.json` files and flags
+string values under keys like `password`, `secret`, `token`, `api_key`,
+even if the value doesn't match a specific regex pattern.
+
 ### Reducing high-entropy false positives
 
 The high-entropy sweep only runs on lines that look like they could
@@ -288,6 +311,9 @@ syck-hunt example.com -f sarif        # SARIF output for GitHub Code Scanning
 | `-sp` | `--syck-path`         | Path to syck.py (if not on $PATH)            | —       |
 | `-sm` | `--extract-source-maps`| Extract sources from source maps and scan   | off     |
 | `-jsd`| `--js-depth`          | Recursively follow JS imports up to N depth  | `0`     |
+| `-xs` | `--extract-scripts`   | Extract inline `<script>` blocks from HTML   | off     |
+|       | `--header`            | Custom HTTP header (repeatable)              | —       |
+|       | `--cookie`            | Cookie header value                          | —       |
 | `-ct` | `--check-tools`       | Check deps and exit                          | —       |
 | `-dr` | `--dry-run`           | Print commands without running them          | —       |
 | `-nc` | `--no-color`          | Disable coloured output                      | off     |
@@ -307,6 +333,8 @@ syck-hunt example.com -aj             # download all crawled files, not just .js
 syck-hunt example.com -jsd 2          # recursively follow JS imports 2 levels deep
 syck-hunt example.com -sm             # extract source maps + scan original sources
 syck-hunt example.com -sm -jsd 1      # combine both: deep crawl + source map scan
+syck-hunt example.com -xs              # extract inline <script> from HTML
+syck-hunt example.com --cookie "session=abc" --header 'Authorization: Bearer x'  # auth-gated JS
 ```
 
 ### Subdomain enumeration (opt-in)
