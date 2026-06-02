@@ -627,6 +627,14 @@ def load_custom_rules(path: str) -> list[Rule]:
 # Pre-compiled regexes used by the high-entropy sweep.  Compiled once
 # at module load instead of on every line of every file.
 _ENTROPY_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+# Exclude known non-secret high-entropy patterns from entropy sweep
+_ENTROPY_EXCLUDE_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\+/|"  # base64 charset
+    r"MDU6[A-Za-z0-9+/=]{10,}"  # GitHub node IDs (MDU6...)
+    r")"
+)
 # Only run the entropy sweep on lines that look like they could carry
 # a secret.  Without this filter minified JS, source maps and JSON
 # configs full of base64 blobs produce huge numbers of false-positive
@@ -648,6 +656,8 @@ _SECRET_CONTEXT_RE = re.compile(
 )
 
 
+_BUNDLER_CHUNK_RE = re.compile(r"import\{[A-Za-z, ]+\}from\"\./(?:chunk-|polyfills|main)")
+
 def _is_minified_js(path: Path, content: str) -> bool:
     """Heuristics for minified/bundled JS.  These files contain thousands
     of long alphanumeric tokens (variable names, base64 data URIs, hash
@@ -666,7 +676,14 @@ def _is_minified_js(path: Path, content: str) -> bool:
     avg = len(content) / nlines
     # Minified JS is typically 1-3 huge lines, or has a very high
     # average line length.
-    return nlines <= 3 or avg > 2000
+    if nlines <= 3 or avg > 2000:
+        return True
+    # Bundler output (webpack, Angular CLI, etc.) — split across many
+    # lines but every line is a dense import chain or IIFE that will
+    # trigger false positives in the entropy sweep.
+    if _BUNDLER_CHUNK_RE.search(content):
+        return True
+    return False
 
 
 # ──────────────────────────────────────────────
@@ -846,6 +863,8 @@ def scan_file(path: Path, min_severity: str = "LOW",
             # "the whole minified JS file is reported as high entropy"
             # false positive.
             for token in _ENTROPY_TOKEN_RE.findall(line):
+                if _ENTROPY_EXCLUDE_RE.search(token):
+                    continue
                 if likely_secret(token, min_len=32, min_entropy=4.5):
                     add(Finding(
                         file=str(path),
