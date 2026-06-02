@@ -960,14 +960,29 @@ def scan_paths(
     files = _collect_files(targets, skip_binary, follow_symlinks,
                            exclude_patterns, max_file_size)
 
-    if progress:
+    # Auto-enable progress for larger scans
+    show_progress = progress or len(files) > 20
+
+    if show_progress:
         print(color(f"[*] Scanning {len(files)} file(s) with {workers} worker(s)…", GREY),
               file=sys.stderr)
 
     findings: list[Finding] = []
-    if workers <= 1 or len(files) <= 1:
+    total = len(files)
+    done = 0
+
+    if total == 0:
+        return findings
+
+    if workers <= 1 or total <= 1:
         for f in files:
             findings.extend(scan_file(f, min_severity, high_entropy_scan, decode_base64))
+            done += 1
+            if show_progress and done % max(1, total // 20) == 0:
+                print(color(f"\r  [{done}/{total}] files scanned…", GREY),
+                      end="", file=sys.stderr)
+        if show_progress:
+            print(color(f"\r  [{total}/{total}] files scanned.      ", GREY), file=sys.stderr)
     else:
         with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = {
@@ -981,6 +996,13 @@ def scan_paths(
                 except Exception as exc:
                     print(color(f"[WARN] scan failed for {path}: {exc}", YELLOW),
                           file=sys.stderr)
+                done += 1
+                if show_progress and done % max(1, total // 20) == 0:
+                    print(color(f"\r  [{done}/{total}] files scanned, "
+                                f"{len(findings)} finding(s)…", GREY),
+                          end="", file=sys.stderr)
+        if show_progress:
+            print(color(f"\r  [{total}/{total}] files scanned.      ", GREY), file=sys.stderr)
 
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 99), f.file, f.line))
     return findings
@@ -1384,6 +1406,9 @@ EXAMPLES:
                    help="Skip built-in rules (requires --rules)")
     p.add_argument("--no-color", action="store_true",
                    help="Disable colored output")
+    p.add_argument("--config", metavar="FILE",
+                   help="Path to config file (default: ./.syckrc, "
+                        "~/.config/syck/config.json)")
     p.add_argument("--progress", action="store_true",
                    help="Print a one-line progress message to stderr")
     p.add_argument("--list-rules", action="store_true",
@@ -1391,10 +1416,68 @@ EXAMPLES:
     return p
 
 
+# ──────────────────────────────────────────────
+# Config file support
+# ──────────────────────────────────────────────
+
+_CONFIG_SEARCH_PATHS = [
+    "~/.config/syck/config.json",
+    "~/.syckrc",
+    ".syckrc",
+    ".syckrc.json",
+]
+
+
+def _load_config(cli_namespace) -> dict:
+    """Load config files from well-known paths and merge them.
+
+    Returns a dict keyed by argparse *dest* names (dashes → underscores).
+    Priority (lowest → highest):
+
+      1. ``~/.config/syck/config.json``
+      2. ``~/.syckrc``
+      3. ``./.syckrc`` / ``./.syckrc.json``
+      4. ``--config`` (explicit)
+    """
+    config: dict = {}
+
+    paths: list[Path] = []
+    for p in _CONFIG_SEARCH_PATHS:
+        resolved = Path(p).expanduser()
+        if resolved not in paths:
+            paths.append(resolved)
+    if cli_namespace and getattr(cli_namespace, "config", None):
+        paths.append(Path(cli_namespace.config))
+
+    for path in paths:
+        if not path.exists() or path.is_dir():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        normalized = {k.replace("-", "_").replace(" ", "_"): v for k, v in data.items()}
+        config.update(normalized)
+
+    return config
+
+
 def main(argv: list[str]) -> int:
     global USE_COLOR
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+
+    # First pass: detect --config before full parse
+    known, _ = parser.parse_known_args(argv)
+
+    # Load config and bake it in as defaults
+    cfg = _load_config(known)
+    if cfg:
+        parser.set_defaults(**cfg)
+
+    args = parser.parse_args(argv)
 
     if args.no_color or args.format != "text":
         USE_COLOR = False

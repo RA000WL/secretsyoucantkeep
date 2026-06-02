@@ -115,6 +115,12 @@ stage manually or feed intermediate files into other tools.
   (with `K`/`M`/`G` suffix syntax), respects `.gitignore`-style dirs
 - **Cross-platform** — pure Python 3.10+ stdlib, runs on Windows / macOS / Linux
 - **Zero dependencies** — no `pip install` needed
+- **Config file support** — set defaults via `~/.config/syck/config.json` or
+  `./.syckrc` (project-level). No need to repeat flags every run.
+- **Auto-discovered syck** — `syck-hunt` finds `syck.py` in the same
+  directory; no PATH setup required when scripts are kept together
+- **Real-time progress** — shows file count, findings count, and ETA as
+  scan progresses (auto-enabled for 20+ files)
 
 ### Pipeline (`syck-hunt.py`)
 
@@ -137,6 +143,9 @@ stage manually or feed intermediate files into other tools.
   times with exponential backoff (transparent, no flag needed)
 - Dry-run (`-dr`) and tool-check (`-ct`) modes
 - Pass-through of every `syck` option (`-s`, `-f`, `-r`, `-w`)
+- **Auto-discovers syck** — no need to set up PATH; finds `syck.py`
+  alongside `syck-hunt.py` automatically
+- **Custom HTTP headers** — reach auth-gated JS with `--header`/`--cookie`
 
 ---
 
@@ -233,6 +242,26 @@ syck . --max-file-size 50M          # scan big build artefacts
 syck . --exclude "test|mock|spec"   # skip noisy paths
 syck . --no-entropy                 # disable the high-entropy sweep
 ```
+
+### Config file
+
+Default flags can be stored in a JSON config file — no need to repeat
+them on every invocation:
+
+- **Project-level**: `./.syckrc` or `./.syckrc.json`
+- **User-level**: `~/.config/syck/config.json` or `~/.syckrc`
+
+```json
+{
+  "severity": "HIGH",
+  "workers": 8,
+  "format": "html",
+  "decode-base64": true
+}
+```
+
+CLI flags override config values. Use `--config /path/to/file.json` for
+an explicit config path.
 
 ### Advanced scanning
 

@@ -990,29 +990,42 @@ def _resolve_syck(args, interactive: bool) -> list[str] | None:
     """Figure out how to invoke syck.  Returns a command list, or None.
 
     Resolution order:
-      1. --syck-path (explicit, may point to .py or a binary)
-      2. `syck` on $PATH
-      3. Friendly hint + return None
+      1. ``--syck-path`` (explicit)
+      2. ``syck`` on $PATH
+      3. ``syck.py`` next to this script (auto-discovery)
+      4. Friendly hint + ``None``
     """
+    # 1. Explicit --syck-path
     if args.syck_path:
         p = Path(args.syck_path)
         if not p.exists():
             print(color(f"[!] --syck-path {p} does not exist", RED),
                   file=sys.stderr)
             return None
-        # .py file → invoke via python
         if p.suffix == ".py":
             return [sys.executable, str(p)]
         return [str(p)]
+
+    # 2. On PATH
     if which("syck"):
         return ["syck"]
+
+    # 3. Auto-discover syck.py next to this script
+    script_dir = Path(__file__).parent.resolve()
+    local_syck = script_dir / "syck.py"
+    if local_syck.exists():
+        if interactive and USE_COLOR:
+            print(color(f"[*] discovered syck at {local_syck}", CYAN), file=sys.stderr)
+        return [sys.executable, str(local_syck)]
+
+    # 4. Give up with a hint
     if interactive:
-        print(color("\n[!] 'syck' is not on $PATH — skipping the scan stage.", YELL))
-        print(color("    To enable it, pick one:", YELL))
-        print(color("      a) Symlink the script:    ln -s /path/to/syck.py ~/bin/syck", YELL))
-        print(color("      b) Add the script dir to PATH in ~/.zshenv:", YELL))
-        print(color("           export PATH=\"$HOME/secretsyoucantkeep:$PATH\"", YELL))
-        print(color("      c) Pass it explicitly:    --syck-path /path/to/syck.py", YELL))
+        print(color("\n[!] 'syck' not found on $PATH and syck.py not found next "
+                    "to this script.", YELL))
+        print(color("    To fix:", YELL))
+        print(color("      a) Symlink:     ln -s /path/to/syck.py ~/bin/syck", YELL))
+        print(color("      b) Use --syck-path /path/to/syck.py", YELL))
+        print(color("      c) Keep the scripts together in the same directory", YELL))
     return None
 
 
