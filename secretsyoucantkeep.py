@@ -2,16 +2,24 @@
 """
 secretsyoucantkeep.py — local secrets scanner for bug bounty hunters.
 Scans files and folders for exposed credentials, tokens, and keys.
+
+By default secrets are printed IN FULL so you can paste them straight into
+a bug bounty report. Use --redact to mask them in the output.
 """
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import math
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from html import escape as html_escape
 from pathlib import Path
 from typing import Iterable
 
@@ -50,7 +58,7 @@ class Finding:
 
 # ──────────────────────────────────────────────
 # Rule definitions
-# Each entry: (rule_name, severity, compiled_pattern)
+# Each entry: Rule(name, severity, compiled_pattern)
 # ──────────────────────────────────────────────
 @dataclass
 class Rule:
@@ -67,11 +75,17 @@ RULES: list[Rule] = [
     Rule("aws_secret_access_key",
          "CRITICAL",
          re.compile(r"(?i)aws[_\-\.]?secret[_\-\.]?(?:access[_\-\.]?)?key\s*[:=]\s*['\"]?([A-Za-z0-9+/]{40})['\"]?")),
+    Rule("aws_session_token",
+         "CRITICAL",
+         re.compile(r"(?i)aws[_\-\.]?session[_\-\.]?token\s*[:=]\s*['\"]?[A-Za-z0-9+/=]{16,}['\"]?")),
 
     # ── GCP ──────────────────────────────────
     Rule("google_api_key",
          "HIGH",
          re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
+    Rule("google_oauth_token",
+         "HIGH",
+         re.compile(r"\bya29\.[A-Za-z0-9\-_]{20,}\b")),
     Rule("gcp_service_account",
          "CRITICAL",
          re.compile(r'"type"\s*:\s*"service_account"')),
@@ -85,7 +99,7 @@ RULES: list[Rule] = [
          re.compile(r"DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]+")),
     Rule("azure_sas_token",
          "HIGH",
-         re.compile(r"(?i)sig=[A-Za-z0-9%+/=]{20,}")),
+         re.compile(r"(?i)(?:&|\?|^)sig=[A-Za-z0-9%+/=]{20,}")),
     Rule("azure_client_secret",
          "CRITICAL",
          re.compile(r"(?i)client[_\-]?secret\s*[:=]\s*['\"]?[A-Za-z0-9~._\-]{34,}['\"]?")),
@@ -106,6 +120,9 @@ RULES: list[Rule] = [
     Rule("github_server_token",
          "CRITICAL",
          re.compile(r"\bghs_[A-Za-z0-9_]{36}\b")),
+    Rule("github_fine_grained_pat",
+         "CRITICAL",
+         re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9_]{59}\b")),
 
     # ── GitLab ───────────────────────────────
     Rule("gitlab_pat",
@@ -141,17 +158,26 @@ RULES: list[Rule] = [
     Rule("twilio_account_sid",
          "HIGH",
          re.compile(r"\bAC[a-z0-9]{32}\b")),
+    Rule("twilio_api_key_sid",
+         "CRITICAL",
+         re.compile(r"\bSK[a-f0-9]{32}\b")),
     Rule("twilio_auth_token",
          "CRITICAL",
          re.compile(r"(?i)twilio[_\-]?auth[_\-]?token\s*[:=]\s*['\"]?[a-z0-9]{32}['\"]?")),
 
-    # ── SendGrid / Mailgun ────────────────────
+    # ── SendGrid / Mailgun / Mailchimp / Brevo ─
     Rule("sendgrid_api_key",
          "HIGH",
          re.compile(r"\bSG\.[A-Za-z0-9\-_]{22,}\.[A-Za-z0-9\-_]{43,}\b")),
     Rule("mailgun_api_key",
          "HIGH",
          re.compile(r"\bkey-[a-f0-9]{32}\b")),
+    Rule("mailchimp_api_key",
+         "HIGH",
+         re.compile(r"\b[0-9a-f]{32}-us[0-9]{1,2}\b")),
+    Rule("brevo_sendinblue_key",
+         "HIGH",
+         re.compile(r"\bxkeysib-[A-Za-z0-9]{64}-[A-Za-z0-9]{32}\b")),
 
     # ── NPM ──────────────────────────────────
     Rule("npm_token",
@@ -187,6 +213,144 @@ RULES: list[Rule] = [
          "CRITICAL",
          re.compile(r"\bshpat_[A-Za-z0-9]{32}\b")),
 
+    # ── AI Providers ──────────────────────────
+    Rule("openai_api_key",
+         "CRITICAL",
+         re.compile(r"\bsk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}\b")),
+    Rule("openai_project_key",
+         "CRITICAL",
+         re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{40,}\b")),
+    Rule("openai_service_account_key",
+         "CRITICAL",
+         re.compile(r"\bsk-svcacct-[A-Za-z0-9_\-]{40,}\b")),
+    Rule("anthropic_api_key",
+         "CRITICAL",
+         re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{32,}\b")),
+    Rule("anthropic_admin_key",
+         "CRITICAL",
+         re.compile(r"\bsk-ant-admin-[A-Za-z0-9\-_]{32,}\b")),
+    Rule("huggingface_token",
+         "HIGH",
+         re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
+    Rule("replicate_api_token",
+         "HIGH",
+         re.compile(r"\br8_[A-Za-z0-9]{30,}\b")),
+    Rule("cohere_api_key",
+         "HIGH",
+         re.compile(r"\bco-[A-Za-z0-9]{30,}\b")),
+    Rule("groq_api_key",
+         "HIGH",
+         re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
+    Rule("perplexity_api_key",
+         "HIGH",
+         re.compile(r"\bpplx-[A-Za-z0-9]{40,}\b")),
+
+    # ── Modern SaaS ───────────────────────────
+    Rule("supabase_url",
+         "LOW",
+         re.compile(r"https://[a-z0-9]{20,}\.supabase\.co")),
+    Rule("planetscale_password",
+         "CRITICAL",
+         re.compile(r"\bpscale_pw_[A-Za-z0-9_\-]{40,}\b")),
+    Rule("planetscale_token",
+         "CRITICAL",
+         re.compile(r"\bpscale_tkn_[A-Za-z0-9_\-]{40,}\b")),
+    Rule("digitalocean_pat",
+         "CRITICAL",
+         re.compile(r"\bdop_v1_[a-f0-9]{64}\b")),
+    Rule("cloudflare_api_key",
+         "HIGH",
+         re.compile(r"(?i)cloudflare[_\-]?api[_\-]?key\s*[:=]\s*['\"]?[0-9a-f]{32,}['\"]?")),
+    Rule("cloudflare_api_token",
+         "CRITICAL",
+         re.compile(r"(?i)CF_API_TOKEN\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{40}['\"]?")),
+    Rule("vercel_token",
+         "CRITICAL",
+         re.compile(r"\bvercel_[A-Za-z0-9]{24,}\b")),
+    Rule("linear_api_key",
+         "HIGH",
+         re.compile(r"\blin_api_[A-Za-z0-9]{40,}\b")),
+    Rule("ngrok_authtoken",
+         "HIGH",
+         re.compile(r"(?i)ngrok[_\-]?auth[_\-]?token\s*[:=]\s*['\"]?[0-9a-zA-Z_]{40,}['\"]?")),
+
+    # ── Observability / DevOps ────────────────
+    Rule("new_relic_key",
+         "HIGH",
+         re.compile(r"\bNRAK-[A-Z0-9]{27}\b")),
+    Rule("new_relic_api_key",
+         "HIGH",
+         re.compile(r"(?i)new[_\-]?relic[_\-]?(?:api[_\-]?)?key\s*[:=]\s*['\"]?[A-Za-z0-9\-]{20,}['\"]?")),
+    Rule("datadog_api_key",
+         "HIGH",
+         re.compile(r"(?i)datadog[_\-]?api[_\-]?key\s*[:=]\s*['\"]?[A-Za-z0-9]{32,}['\"]?")),
+    Rule("sentry_dsn",
+         "MEDIUM",
+         re.compile(r"https://[a-f0-9]{32}@[a-z0-9.]+\.sentry\.io/\d+")),
+    Rule("pulumi_token",
+         "CRITICAL",
+         re.compile(r"\bpul-[A-Za-z0-9]{40,}\b")),
+
+    # ── HashiCorp Vault / Infra ───────────────
+    Rule("vault_service_token",
+         "CRITICAL",
+         re.compile(r"\bhvs\.[A-Za-z0-9_\-]{24,}\b")),
+    Rule("vault_batch_token",
+         "HIGH",
+         re.compile(r"\bhvb\.[A-Za-z0-9_\-]{24,}\b")),
+    Rule("vault_recovery_token",
+         "CRITICAL",
+         re.compile(r"\bhvr\.[A-Za-z0-9_\-]{24,}\b")),
+    Rule("docker_hub_pat",
+         "CRITICAL",
+         re.compile(r"\bdckr_pat_[A-Za-z0-9_\-]{20,}\b")),
+    Rule("pypi_token",
+         "CRITICAL",
+         re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9\-_]{50,}\b")),
+    Rule("rubygems_api_key",
+         "CRITICAL",
+         re.compile(r"\brubygems_[a-f0-9]{48}\b")),
+    Rule("terraform_cloud_token",
+         "CRITICAL",
+         re.compile(r"\b[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9]{67,}\b")),
+
+    # ── Payment / Commerce ────────────────────
+    Rule("square_access_token",
+         "CRITICAL",
+         re.compile(r"\bsq0atp-[A-Za-z0-9_\-]{22}\b")),
+    Rule("square_oauth_secret",
+         "CRITICAL",
+         re.compile(r"\bsq0csp-[A-Za-z0-9_\-]{32}\b")),
+    Rule("paypal_client_secret",
+         "CRITICAL",
+         re.compile(r"(?i)paypal[_\-]?client[_\-]?secret\s*[:=]\s*['\"]?[A-Za-z0-9\-_]{20,}['\"]?")),
+
+    # ── Maps / Geo ────────────────────────────
+    Rule("mapbox_secret_token",
+         "HIGH",
+         re.compile(r"\bsk\.eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+")),
+    Rule("mapbox_public_token",
+         "LOW",
+         re.compile(r"\bpk\.eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+")),
+
+    # ── Monitoring ────────────────────────────
+    Rule("dynatrace_api_token",
+         "CRITICAL",
+         re.compile(r"\bdt0[a-zA-Z][0-9]{2}\.[A-Za-z0-9]{20,}\.[A-Za-z0-9]{20,}\b")),
+
+    # ── Identity ──────────────────────────────
+    Rule("okta_api_token",
+         "CRITICAL",
+         re.compile(r"\b00[A-Za-z0-9_\-]{40}\b")),
+
+    # ── Misc SaaS ─────────────────────────────
+    Rule("dropbox_token",
+         "HIGH",
+         re.compile(r"\bsl\.[A-Za-z0-9_\-]{20,}\b")),
+    Rule("asana_pat",
+         "HIGH",
+         re.compile(r"\b[0-9]/[0-9]{16,}:[A-F0-9]{32}\b")),
+
     # ── JWT ──────────────────────────────────
     Rule("jwt_token",
          "MEDIUM",
@@ -215,16 +379,33 @@ RULES: list[Rule] = [
     # ── Database connection strings ───────────
     Rule("postgres_uri",
          "CRITICAL",
-         re.compile(r"postgres(?:ql)?://[^:]+:[^@]+@[^\s\"'`]+")),
+         re.compile(r"postgres(?:ql)?://[^:\s\"'`]+:[^@\s\"'`]+@[^\s\"'`]+")),
     Rule("mysql_uri",
          "CRITICAL",
-         re.compile(r"mysql://[^:]+:[^@]+@[^\s\"'`]+")),
+         re.compile(r"mysql://[^:\s\"'`]+:[^@\s\"'`]+@[^\s\"'`]+")),
     Rule("mongodb_uri",
          "CRITICAL",
-         re.compile(r"mongodb(?:\+srv)?://[^:]+:[^@]+@[^\s\"'`]+")),
+         re.compile(r"mongodb(?:\+srv)?://[^:\s\"'`]+:[^@\s\"'`]+@[^\s\"'`]+")),
     Rule("redis_uri",
          "HIGH",
-         re.compile(r"redis://(?:[^:]+:[^@]+@)[^\s\"'`]+")),
+         re.compile(r"redis://(?:[^:\s\"'`]+:[^@\s\"'`]+@)[^\s\"'`]+")),
+
+    # ── Infrastructure ───────────────────────
+    Rule("docker_auth_config",
+         "HIGH",
+         re.compile(r'"auths"\s*:\s*\{')),
+    Rule("kubernetes_secret",
+         "CRITICAL",
+         re.compile(r"(?ms)apiVersion:\s*v1\s*\nkind:\s*Secret\b")),
+    Rule("ssh_password",
+         "HIGH",
+         re.compile(r"(?i)\bssh[_\-]?password\s*[:=]\s*['\"]?[^\s'\",]{8,}['\"]?")),
+    Rule("smtp_password",
+         "HIGH",
+         re.compile(r"(?i)\bsmtp[_\-]?password\s*[:=]\s*['\"]?[^\s'\",]{6,}['\"]?")),
+    Rule("ftp_password",
+         "HIGH",
+         re.compile(r"(?i)\bftp[_\-]?(?:password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\",]{6,}['\"]?")),
 
     # ── Generic patterns ─────────────────────
     Rule("bearer_token",
@@ -247,6 +428,12 @@ SEVERITY_COLOR = {
     "HIGH":     YELLOW + BOLD,
     "MEDIUM":   CYAN,
     "LOW":      GREY,
+}
+SEVERITY_SARIF_LEVEL = {
+    "CRITICAL": "error",
+    "HIGH":     "error",
+    "MEDIUM":   "warning",
+    "LOW":      "note",
 }
 
 SKIP_DIRS = {
@@ -271,6 +458,9 @@ TEXT_EXTENSIONS = {
     ".npmrc", ".yarnrc", ".dockerignore",
     "Dockerfile", ".dockerfile",
 }
+
+DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
+DEFAULT_WORKERS = 4
 
 
 # ──────────────────────────────────────────────
@@ -334,8 +524,24 @@ def is_text_file(path: Path) -> bool:
         return False
 
 
+def parse_size(value: str | int) -> int:
+    """Accepts '4096', '512K', '10M', '2G' (case-insensitive)."""
+    if isinstance(value, int):
+        return value
+    s = str(value).strip().upper().replace("IB", "")
+    multipliers = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+    for suffix, mul in multipliers.items():
+        if s.endswith(suffix):
+            try:
+                return int(float(s.removesuffix(suffix)) * mul)
+            except ValueError:
+                pass
+    raise argparse.ArgumentTypeError(f"invalid size value: {value!r}")
+
+
 def iter_files(root: Path, follow_symlinks: bool = False,
-               exclude_patterns: list[re.Pattern[str]] | None = None) -> Iterable[Path]:
+               exclude_patterns: list[re.Pattern[str]] | None = None,
+               max_file_size: int = DEFAULT_MAX_FILE_SIZE) -> Iterable[Path]:
     for cur_root, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
         dirnames[:] = [
             d for d in dirnames
@@ -345,6 +551,12 @@ def iter_files(root: Path, follow_symlinks: bool = False,
             candidate = Path(cur_root) / filename
             if candidate.is_symlink() and not follow_symlinks:
                 continue
+            if max_file_size:
+                try:
+                    if candidate.stat().st_size > max_file_size:
+                        continue
+                except OSError:
+                    continue
             if exclude_patterns:
                 rel = str(candidate)
                 if any(pat.search(rel) for pat in exclude_patterns):
@@ -356,6 +568,11 @@ def iter_files(root: Path, follow_symlinks: bool = False,
 # Core scanner
 # ──────────────────────────────────────────────
 
+# Pre-compute severity ranks so we can skip rules cheaply
+_RULE_RANK: dict[str, int] = {r.name: SEVERITY_ORDER[r.severity] for r in RULES}
+_MIN_RANK: int = SEVERITY_ORDER["LOW"]
+
+
 def scan_file(path: Path, min_severity: str = "LOW",
               high_entropy_scan: bool = True) -> list[Finding]:
     findings: list[Finding] = []
@@ -365,6 +582,7 @@ def scan_file(path: Path, min_severity: str = "LOW",
         return findings
 
     seen: set[tuple[int, str, str]] = set()
+    min_rank = SEVERITY_ORDER[min_severity]
 
     def add(finding: Finding) -> None:
         key = (finding.line, finding.rule, finding.secret[:30])
@@ -375,11 +593,10 @@ def scan_file(path: Path, min_severity: str = "LOW",
     lines = content.splitlines()
     for lineno, line in enumerate(lines, start=1):
         for rule in RULES:
-            if SEVERITY_ORDER[rule.severity] > SEVERITY_ORDER[min_severity]:
+            if _RULE_RANK[rule.name] > min_rank:
                 continue
             for match in rule.pattern.finditer(line):
                 raw = match.group(0)
-                # extra check for generic_secret / dotenv_secret
                 if rule.name in ("generic_secret", "dotenv_secret", "basic_auth_header"):
                     candidate = raw.split("=", 1)[-1].split(":", 1)[-1].strip().strip("'\"")
                     if not likely_secret(candidate, min_len=12, min_entropy=3.2):
@@ -395,7 +612,6 @@ def scan_file(path: Path, min_severity: str = "LOW",
                     entropy=ent,
                 ))
 
-        # High-entropy token sweep (catches undocumented tokens)
         if high_entropy_scan:
             for token in re.findall(r"[A-Za-z0-9+/=_\-]{32,}", line):
                 if likely_secret(token, min_len=32, min_entropy=4.0):
@@ -412,6 +628,32 @@ def scan_file(path: Path, min_severity: str = "LOW",
     return findings
 
 
+def _collect_files(targets: list[Path], skip_binary: bool,
+                   follow_symlinks: bool,
+                   exclude_patterns: list[re.Pattern[str]] | None,
+                   max_file_size: int) -> list[Path]:
+    files: list[Path] = []
+    for target in targets:
+        if target.is_file():
+            if skip_binary and not is_text_file(target):
+                continue
+            if max_file_size:
+                try:
+                    if target.stat().st_size > max_file_size:
+                        continue
+                except OSError:
+                    continue
+            files.append(target)
+        elif target.is_dir():
+            for path in iter_files(target, follow_symlinks, exclude_patterns, max_file_size):
+                if skip_binary and not is_text_file(path):
+                    continue
+                files.append(path)
+        else:
+            print(color(f"[WARN] skipping unknown path: {target}", YELLOW), file=sys.stderr)
+    return files
+
+
 def scan_paths(
     targets: list[Path],
     skip_binary: bool = True,
@@ -419,22 +661,35 @@ def scan_paths(
     min_severity: str = "LOW",
     high_entropy_scan: bool = True,
     exclude_patterns: list[re.Pattern[str]] | None = None,
+    workers: int = DEFAULT_WORKERS,
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    progress: bool = False,
 ) -> list[Finding]:
-    findings: list[Finding] = []
-    for target in targets:
-        if target.is_file():
-            if skip_binary and not is_text_file(target):
-                continue
-            findings.extend(scan_file(target, min_severity, high_entropy_scan))
-        elif target.is_dir():
-            for path in iter_files(target, follow_symlinks, exclude_patterns):
-                if skip_binary and not is_text_file(path):
-                    continue
-                findings.extend(scan_file(path, min_severity, high_entropy_scan))
-        else:
-            print(color(f"[WARN] skipping unknown path: {target}", YELLOW), file=sys.stderr)
+    files = _collect_files(targets, skip_binary, follow_symlinks,
+                           exclude_patterns, max_file_size)
 
-    # Sort: severity first, then file path, then line number
+    if progress:
+        print(color(f"[*] Scanning {len(files)} file(s) with {workers} worker(s)…", GREY),
+              file=sys.stderr)
+
+    findings: list[Finding] = []
+    if workers <= 1 or len(files) <= 1:
+        for f in files:
+            findings.extend(scan_file(f, min_severity, high_entropy_scan))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as exe:
+            futures = {
+                exe.submit(scan_file, f, min_severity, high_entropy_scan): f
+                for f in files
+            }
+            for fut in as_completed(futures):
+                path = futures[fut]
+                try:
+                    findings.extend(fut.result())
+                except Exception as exc:
+                    print(color(f"[WARN] scan failed for {path}: {exc}", YELLOW),
+                          file=sys.stderr)
+
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 99), f.file, f.line))
     return findings
 
@@ -444,50 +699,295 @@ def scan_paths(
 # ──────────────────────────────────────────────
 
 def redact(secret: str) -> str:
-    """Show first 4 and last 4 chars, mask the rest."""
-    if len(secret) <= 12:
+    """Mask the secret, leaving only a small hint of its length."""
+    if len(secret) <= 8:
         return "*" * len(secret)
+    if len(secret) <= 16:
+        return secret[:2] + "*" * (len(secret) - 4) + secret[-2:]
     return secret[:4] + "*" * (len(secret) - 8) + secret[-4:]
 
 
-def print_findings(findings: list[Finding], show_secrets: bool = False) -> None:
+def _summary_lines(findings: list[Finding]) -> list[str]:
+    if not findings:
+        return [color("\n✔  No secrets found.", GREEN)]
+    counts: dict[str, int] = {}
+    for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+    files_hit = len({f.file for f in findings})
+    total = len(findings)
+    lines = [color("\n── Summary ──────────────────────────────", BOLD)]
+    lines.append(f"  Files with findings : {color(str(files_hit), YELLOW)}")
+    lines.append(f"  Total findings      : {color(str(total), RED if total else GREEN)}")
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        n = counts.get(sev, 0)
+        if n:
+            lines.append(f"    {sev:<10}  {n}")
+    lines.append("")
+    return lines
+
+
+def format_text(findings: list[Finding], redact_secrets: bool = False) -> str:
+    lines: list[str] = []
+    if findings and not redact_secrets:
+        lines.append(color("⚠  WARNING: secrets are shown IN FULL — do not share this output publicly.",
+                           YELLOW + BOLD))
+        lines.append("")
+
     current_file = None
     for f in findings:
         if f.file != current_file:
             current_file = f.file
-            print(f"\n{color(f.file, BOLD + MAGENTA)}")
+            if current_file is not None:
+                lines.append("")
+            lines.append(color(f.file, BOLD + MAGENTA))
 
         sev_col = SEVERITY_COLOR.get(f.severity, "")
         sev_tag = color(f"[{f.severity}]", sev_col)
         rule_tag = color(f"[{f.rule}]", CYAN)
-        secret_display = f.secret if show_secrets else redact(f.secret)
+        secret_display = f.secret if not redact_secrets else redact(f.secret)
 
-        print(f"  {color(str(f.line), GREY)}  {sev_tag} {rule_tag}  "
-              f"entropy={color(str(f.entropy), GREY)}")
-        print(f"       secret : {color(secret_display, YELLOW)}")
-        print(f"       context: {color(f.context, GREY)}")
+        lines.append(f"  {color(str(f.line), GREY)}  {sev_tag} {rule_tag}  "
+                     f"entropy={color(str(f.entropy), GREY)}")
+        lines.append(f"       secret : {color(secret_display, YELLOW)}")
+        lines.append(f"       context: {color(f.context, GREY)}")
+
+    lines.extend(_summary_lines(findings))
+    return "\n".join(lines) + "\n"
 
 
-def print_summary(findings: list[Finding]) -> None:
+def format_json(findings: list[Finding], redact_secrets: bool = False) -> str:
+    data = [asdict(f) for f in findings]
+    if redact_secrets:
+        for item in data:
+            item["secret"] = redact(item["secret"])
+    return json.dumps(data, indent=2)
+
+
+def format_sarif(findings: list[Finding], redact_secrets: bool = False) -> str:
+    rules_index: dict[str, int] = {}
+    rules_list: list[dict] = []
+    for f in findings:
+        if f.rule not in rules_index:
+            rules_index[f.rule] = len(rules_list)
+            rules_list.append({
+                "id": f.rule,
+                "name": f.rule,
+                "shortDescription": {"text": f"Detects {f.rule}."},
+                "defaultConfiguration": {
+                    "level": SEVERITY_SARIF_LEVEL.get(f.severity, "warning"),
+                },
+            })
+
+    results = []
+    for f in findings:
+        secret_value = redact(f.secret) if redact_secrets else f.secret
+        results.append({
+            "ruleId": f.rule,
+            "ruleIndex": rules_index[f.rule],
+            "level": SEVERITY_SARIF_LEVEL.get(f.severity, "warning"),
+            "message": {"text": f"Potential {f.rule} exposed."},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": f.file},
+                    "region": {
+                        "startLine": f.line,
+                        "endLine": f.line,
+                        "snippet": {"text": f.context[:200]},
+                    },
+                },
+                "properties": {"secret": secret_value, "entropy": f.entropy},
+            }],
+        })
+
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "secretsyoucantkeep",
+                    "version": "2.0.0",
+                    "informationUri": "https://github.com/local/secretsyoucantkeep",
+                    "rules": rules_list,
+                },
+            },
+            "results": results,
+        }],
+    }
+    return json.dumps(sarif, indent=2)
+
+
+def _md_escape(value: str) -> str:
+    return value.replace("|", r"\|").replace("\n", " ").replace("\r", " ")
+
+
+def format_markdown(findings: list[Finding], redact_secrets: bool = False) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines: list[str] = [f"# secretsyoucantkeep scan report", f"_Generated: {ts}_", ""]
+
     if not findings:
-        print(color("\n✔  No secrets found.", GREEN))
-        return
+        lines.append("**No secrets found.**")
+        return "\n".join(lines) + "\n"
 
     counts: dict[str, int] = {}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
-
     files_hit = len({f.file for f in findings})
-    total = len(findings)
 
-    print(color(f"\n── Summary ──────────────────────────────", BOLD))
-    print(f"  Files with findings : {color(str(files_hit), YELLOW)}")
-    print(f"  Total findings      : {color(str(total), RED if total else GREEN)}")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- **Files with findings:** {files_hit}")
+    lines.append(f"- **Total findings:** {len(findings)}")
     for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
         n = counts.get(sev, 0)
         if n:
-            print(f"    {color(sev, SEVERITY_COLOR[sev]):<20}  {n}")
-    print()
+            lines.append(f"- **{sev}:** {n}")
+    lines.append("")
+
+    if not redact_secrets:
+        lines.append("> ⚠️ **WARNING:** secrets below are shown IN FULL. Do not paste this report "
+                     "into a public issue tracker without redacting first.")
+        lines.append("")
+
+    files: dict[str, list[Finding]] = {}
+    for f in findings:
+        files.setdefault(f.file, []).append(f)
+
+    lines.append("## Findings")
+    lines.append("")
+    for path, items in files.items():
+        lines.append(f"### `{_md_escape(path)}`")
+        lines.append("")
+        lines.append("| Line | Severity | Rule | Secret | Entropy |")
+        lines.append("|------|----------|------|--------|---------|")
+        for f in items:
+            secret = (f"`{_md_escape(f.secret)}`" if not redact_secrets
+                      else f"`{_md_escape(redact(f.secret))}`")
+            lines.append(f"| {f.line} | {f.severity} | {f.rule} | {secret} | {f.entropy} |")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def format_csv(findings: list[Finding], redact_secrets: bool = False) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(["file", "line", "rule", "severity", "secret", "context", "entropy"])
+    for f in findings:
+        secret = redact(f.secret) if redact_secrets else f.secret
+        writer.writerow([f.file, f.line, f.rule, f.severity, secret, f.context, f.entropy])
+    return buf.getvalue()
+
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>secretsyoucantkeep report</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          margin: 24px; background: #0d1117; color: #c9d1d9; }}
+  h1, h2, h3 {{ color: #f0f6fc; }}
+  .meta {{ color: #8b949e; font-size: 0.9em; }}
+  .warn {{ background: #2d1b00; border-left: 4px solid #d29922; padding: 10px 14px;
+           border-radius: 4px; margin: 12px 0; color: #f0c674; }}
+  .summary {{ display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }}
+  .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+           padding: 10px 14px; font-size: 0.95em; }}
+  .CRITICAL {{ color: #f85149; font-weight: 700; }}
+  .HIGH     {{ color: #d29922; font-weight: 600; }}
+  .MEDIUM   {{ color: #58a6ff; }}
+  .LOW      {{ color: #8b949e; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
+  th, td {{ text-align: left; padding: 6px 10px; border-bottom: 1px solid #21262d;
+            font-size: 0.9em; vertical-align: top; }}
+  th {{ background: #161b22; color: #f0f6fc; cursor: pointer; user-select: none; }}
+  tr:hover td {{ background: #161b22; }}
+  code {{ background: #161b22; padding: 2px 6px; border-radius: 4px;
+          font-family: "SF Mono", Menlo, Consolas, monospace; word-break: break-all;
+          color: #ffa657; }}
+  details {{ margin: 8px 0; background: #0d1117; }}
+  summary {{ cursor: pointer; padding: 10px 12px; background: #161b22;
+             border: 1px solid #30363d; border-radius: 6px; font-weight: 500; }}
+  summary:hover {{ background: #1c2128; }}
+  .file-name {{ color: #d2a8ff; font-family: "SF Mono", Menlo, monospace; }}
+  .context {{ color: #8b949e; font-style: italic; word-break: break-word; }}
+  .empty {{ padding: 60px; text-align: center; color: #3fb950; font-size: 1.2em; }}
+</style>
+</head>
+<body>
+<h1>secretsyoucantkeep report</h1>
+<p class="meta">Generated: {timestamp} &middot; Tool: secretsyoucantkeep v2.0.0</p>
+{warning}
+{body}
+</body>
+</html>
+"""
+
+
+def format_html(findings: list[Finding], redact_secrets: bool = False) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+
+    warning = ""
+    if findings and not redact_secrets:
+        warning = ('<div class="warn">⚠ <strong>WARNING:</strong> secrets below are shown IN FULL. '
+                   'Do not share this HTML file publicly.</div>')
+
+    if not findings:
+        body = '<div class="empty">✔ No secrets found.</div>'
+    else:
+        files: dict[str, list[Finding]] = {}
+        for f in findings:
+            files.setdefault(f.file, []).append(f)
+
+        parts: list[str] = ['<div class="summary">']
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            n = counts[sev]
+            parts.append(f'<div class="card {sev}">{sev}: {n}</div>')
+        parts.append(f'<div class="card">Files: {len(files)}</div>')
+        parts.append(f'<div class="card">Total: {len(findings)}</div>')
+        parts.append('</div>')
+
+        for path, items in files.items():
+            parts.append('<details open>')
+            parts.append(
+                f'<summary><span class="file-name">{html_escape(path)}</span> '
+                f'<span class="meta">({len(items)} finding{"s" if len(items) != 1 else ""})</span></summary>'
+            )
+            parts.append('<table>')
+            parts.append('<thead><tr><th>Line</th><th>Severity</th><th>Rule</th>'
+                         '<th>Secret</th><th>Entropy</th><th>Context</th></tr></thead>')
+            parts.append('<tbody>')
+            for f in items:
+                secret_disp = (f.secret if not redact_secrets else redact(f.secret))
+                parts.append(
+                    f'<tr>'
+                    f'<td>{f.line}</td>'
+                    f'<td class="{f.severity}">{f.severity}</td>'
+                    f'<td>{html_escape(f.rule)}</td>'
+                    f'<td><code>{html_escape(secret_disp)}</code></td>'
+                    f'<td>{f.entropy}</td>'
+                    f'<td class="context">{html_escape(f.context)}</td>'
+                    f'</tr>'
+                )
+            parts.append('</tbody></table>')
+            parts.append('</details>')
+        body = "\n".join(parts)
+
+    return _HTML_TEMPLATE.format(timestamp=timestamp, warning=warning, body=body)
+
+
+FORMATTERS = {
+    "text":     format_text,
+    "json":     format_json,
+    "sarif":    format_sarif,
+    "markdown": format_markdown,
+    "csv":      format_csv,
+    "html":     format_html,
+}
 
 
 # ──────────────────────────────────────────────
@@ -497,29 +997,72 @@ def print_summary(findings: list[Finding]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="secretsyoucantkeep",
-        description="Scan files/folders for exposed secrets (bug bounty edition).",
+        description=(
+            "Scan files/folders for exposed secrets (bug bounty edition).\n"
+            "\n"
+            "By default detected secrets are printed IN FULL so you can paste them\n"
+            "straight into a bug bounty report. Use --redact to mask them, and never\n"
+            "share unredacted output on public trackers."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-examples:
-  %(prog)s .                          # scan current folder
-  %(prog)s /path/to/repo              # scan a repo
-  %(prog)s file.env secrets.yaml      # scan specific files
-  %(prog)s . --severity HIGH          # only HIGH and CRITICAL
-  %(prog)s . --json -o findings.json  # dump JSON
-  %(prog)s . --show-secrets           # print full secret values
-  %(prog)s . --exclude "test|mock"    # skip paths matching regex
-        """,
+        epilog="""\
+WHAT IT FINDS (rule categories):
+  Cloud ........... AWS, GCP, Azure, Oracle, DigitalOcean, Cloudflare, Vercel
+  Source control .. GitHub (PAT/OAuth/App/Server/Fine-grained), GitLab, Bitbucket
+  Messaging ....... Slack, Discord, Telegram, Twilio, Mailgun, SendGrid,
+                   Mailchimp, Brevo
+  Payments ........ Stripe, Square, PayPal
+  AI providers .... OpenAI, Anthropic, HuggingFace, Replicate, Cohere, Groq,
+                   Perplexity
+  SaaS ............ Supabase, PlanetScale, Linear, ngrok, New Relic, Datadog,
+                   Sentry, Pulumi, Dynatrace, Okta, Dropbox, Asana
+  Infra ........... HashiCorp Vault, Docker Hub, Kubernetes Secrets, PyPI,
+                   RubyGems, Terraform Cloud, SSH/SMTP/FTP passwords
+  Crypto .......... RSA/DSA/EC/OpenSSH/PGP private keys, certificates
+  Databases ....... Postgres, MySQL, MongoDB, Redis connection strings
+  Generic ......... Bearer/Basic auth, JWT, "key=value" secrets, dotenv-style
+  Catch-all ....... High-entropy token sweep (catches unknown patterns)
+
+EXIT CODES:
+  0  No secrets found (or --list-rules only)
+  1  One or more secrets were found
+  2  Invalid arguments / missing paths
+
+BUG-BOUNTY TIPS:
+  •  Run on a fresh target repo:    %(prog)s ./repo --severity CRITICAL
+  •  Generate a clean report:        %(prog)s ./repo --format html -o r.html
+  •  Upload to GitHub code scanning: %(prog)s ./repo --format sarif --redact \\
+                                       -o results.sarif
+  •  Scan JS/TS build artefacts:     %(prog)s ./dist --max-file-size 50M
+  •  Skip noisy dirs:                %(prog)s ./repo --exclude 'test|mock|spec'
+  •  CI gate (fail on CRITICAL only):
+        %(prog)s . --severity CRITICAL || exit 1
+
+EXAMPLES:
+  %(prog)s .                              scan current folder, show secrets in full
+  %(prog)s /path/to/repo --format html -o report.html
+  %(prog)s . --format sarif -o report.sarif
+  %(prog)s . --format markdown -o report.md
+  %(prog)s . --severity HIGH              only HIGH and CRITICAL
+  %(prog)s . --redact                     mask secrets in output
+  %(prog)s . --workers 8 --max-file-size 5M
+  %(prog)s . --exclude "test|mock"        skip paths matching regex
+  %(prog)s file1.env file2.yaml           scan specific files
+  %(prog)s . --list-rules                 list all built-in rules and exit
+""",
     )
     p.add_argument("paths", nargs="*", default=["."],
                    help="Files or directories to scan (default: current directory)")
     p.add_argument("--severity", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
                    default="LOW", help="Minimum severity to report (default: LOW)")
-    p.add_argument("--json", action="store_true",
-                   help="Output results as JSON")
+    p.add_argument("--format", choices=list(FORMATTERS.keys()),
+                   default="text", help="Output format (default: text)")
     p.add_argument("-o", "--output", metavar="FILE",
                    help="Write output to FILE instead of stdout")
+    p.add_argument("--redact", action="store_true",
+                   help="Mask secret values in the output (default: shown in full)")
     p.add_argument("--show-secrets", action="store_true",
-                   help="Print full secret values (default: redacted)")
+                   help=argparse.SUPPRESS)  # deprecated: secrets are now shown by default
     p.add_argument("--no-entropy", action="store_true",
                    help="Disable high-entropy token sweep")
     p.add_argument("--follow-symlinks", action="store_true",
@@ -528,8 +1071,16 @@ examples:
                    help="Attempt to scan binary files")
     p.add_argument("--exclude", metavar="REGEX", action="append", default=[],
                    help="Exclude paths matching this regex (repeatable)")
+    p.add_argument("--workers", type=int, default=DEFAULT_WORKERS, metavar="N",
+                   help=f"Parallel workers for file scanning (default: {DEFAULT_WORKERS})")
+    p.add_argument("--max-file-size", type=parse_size,
+                   default=DEFAULT_MAX_FILE_SIZE, metavar="BYTES",
+                   help="Skip files larger than this. Accepts K/M/G suffix "
+                        f"(default: {DEFAULT_MAX_FILE_SIZE // (1024 * 1024)}M)")
     p.add_argument("--no-color", action="store_true",
                    help="Disable colored output")
+    p.add_argument("--progress", action="store_true",
+                   help="Print a one-line progress message to stderr")
     p.add_argument("--list-rules", action="store_true",
                    help="Print all built-in rules and exit")
     return p
@@ -540,7 +1091,7 @@ def main(argv: list[str]) -> int:
 
     args = build_parser().parse_args(argv)
 
-    if args.no_color:
+    if args.no_color or args.format != "text":
         USE_COLOR = False
 
     if args.list_rules:
@@ -558,6 +1109,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     exclude_patterns = [re.compile(pat) for pat in args.exclude] if args.exclude else None
+    redact_secrets = args.redact or bool(args.show_secrets)
 
     findings = scan_paths(
         targets=targets,
@@ -566,26 +1118,24 @@ def main(argv: list[str]) -> int:
         min_severity=args.severity,
         high_entropy_scan=not args.no_entropy,
         exclude_patterns=exclude_patterns,
+        workers=max(1, args.workers),
+        max_file_size=args.max_file_size,
+        progress=args.progress,
     )
 
-    # Produce output
-    if args.json:
-        output_text = json.dumps([asdict(f) for f in findings], indent=2)
+    formatter = FORMATTERS[args.format]
+    if args.format == "text":
+        # Stream the formatted text directly to the chosen sink while preserving
+        # ANSI colour codes captured in the returned string.
+        output_text = formatter(findings, redact_secrets)
     else:
-        # Capture colored output for stdout or redirect to file
-        import io
-        buf = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-        print_findings(findings, show_secrets=args.show_secrets)
-        print_summary(findings)
-        sys.stdout = old_stdout
-        output_text = buf.getvalue()
+        output_text = formatter(findings, redact_secrets)
 
     if args.output:
         out_path = Path(args.output)
         out_path.write_text(output_text, encoding="utf-8")
-        print(color(f"Results written to {out_path}", GREEN))
+        if USE_COLOR:
+            print(color(f"Results written to {out_path}", GREEN))
     else:
         print(output_text, end="")
 
