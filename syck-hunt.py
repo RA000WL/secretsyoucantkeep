@@ -29,7 +29,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
+import json
+import re
 import shutil
 import subprocess
 import sys
@@ -114,6 +117,47 @@ class HostLimiter:
             sem = self._sems.get(host)
         if sem is not None:
             sem.release()
+
+
+# ──────────────────────────────────────────────
+# Source map / JS url extractors
+# ──────────────────────────────────────────────
+
+_SOURCEMAP_URL_RE = re.compile(r'//# sourceMappingURL=(.+)')
+_JS_URL_RE = re.compile(r"""['\"](https?://[^'\"]+\.(?:js|mjs|cjs)(?:\?[^'\"]*)?)['\"]""")
+
+
+def _find_source_maps(content: str) -> list[str]:
+    return [m.group(1).strip() for m in _SOURCEMAP_URL_RE.finditer(content)]
+
+
+def _extract_inline_source_map(data_uri: str) -> dict | None:
+    try:
+        header, encoded = data_uri.split(",", 1)
+        if "base64" in header:
+            decoded = base64.b64decode(encoded)
+        else:
+            decoded = urllib.request.unquote(encoded).encode("utf-8")
+        return json.loads(decoded)
+    except Exception:
+        return None
+
+
+def _extract_js_urls(files: list[Path], visited: set[str], js_only: bool) -> list[str]:
+    urls: list[str] = []
+    for f in files:
+        if not f.is_file():
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _JS_URL_RE.finditer(content):
+            url = match.group(1)
+            if url not in visited:
+                urls.append(url)
+                visited.add(url)
+    return urls
 
 
 # ──────────────────────────────────────────────
@@ -308,8 +352,13 @@ def _download_one(url: str, dest_dir: Path,
 def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
                    workers: int = 10, js_only: bool = True,
                    rate_limit: float = 5.0, max_per_host: int = 2,
+                   js_depth: int = 0,
                    dry_run: bool = False) -> Path | None:
-    """Stage 4: download JS files for offline scanning."""
+    """Stage 4: download JS files for offline scanning.
+
+    When *js_depth* > 0, downloaded JS files are parsed for import/require
+    URLs and those are fetched recursively up to *js_depth* levels deep.
+    """
     files_dir = out_dir / "downloaded"
     files_dir.mkdir(exist_ok=True)
 
@@ -324,36 +373,70 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
         if js_only and ".js" not in u.lower():
             continue
         urls.append(u)
-    urls = urls[:max_files]
 
-    if dry_run:
-        rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
-        print(color(
-            f"DRY: would download {len(urls)} URL(s) → {files_dir} "
-            f"({workers} workers, {rps}, ≤{max_per_host}/host)",
-            GREY,
-        ))
-        return files_dir
     if not urls:
         print(color("[!] no URLs matched the filter", YELL))
         return None
 
-    rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
-    print(color(
-        f"[*] downloading {len(urls)} URL(s) — {workers} workers, {rps}, "
-        f"≤{max_per_host}/host…", CYAN,
-    ))
+    visited: set[str] = set()
+    url_map: dict[str, str] = {}
     limiter = RateLimiter(rate_limit)
     host_limiter = HostLimiter(max_per_host)
-    ok = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as exe:
-        futs = [exe.submit(_download_one, u, files_dir, limiter, host_limiter)
-                for u in urls]
-        for fut in concurrent.futures.as_completed(futs):
-            if fut.result() is not None:
-                ok += 1
-    print(color(f"[+] {ok}/{len(urls)} downloaded", GREEN))
-    return files_dir if ok > 0 else None
+    all_ok = 0
+
+    current_batch = urls[:max_files]
+
+    for level in range(js_depth + 1):
+        if not current_batch:
+            break
+        if level > 0:
+            print(color(f"[*] recursion depth {level}: {len(current_batch)} new URL(s)", CYAN))
+
+        if dry_run:
+            rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
+            print(color(
+                f"DRY [depth {level}]: would download {len(current_batch)} URL(s) → {files_dir} "
+                f"({workers} workers, {rps}, ≤{max_per_host}/host)",
+                GREY,
+            ))
+            # Still need to mark visited so dry-run follows the correct path
+            visited.update(current_batch)
+            if level < js_depth:
+                current_batch = [u for u in current_batch if u not in visited][:max_files]
+            continue
+
+        rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
+        print(color(
+            f"[*] downloading {len(current_batch)} URL(s) — {workers} workers, {rps}, "
+            f"≤{max_per_host}/host…", CYAN,
+        ))
+        batch_ok = 0
+        batch_downloaded: list[Path] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as exe:
+            futs = {exe.submit(_download_one, u, files_dir, limiter, host_limiter): u
+                    for u in current_batch}
+            for fut in concurrent.futures.as_completed(futs):
+                u = futs[fut]
+                visited.add(u)
+                result = fut.result()
+                if result is not None:
+                    batch_ok += 1
+                    batch_downloaded.append(result)
+                    url_map[u] = str(result.relative_to(files_dir))
+        all_ok += batch_ok
+        print(color(f"[+] {batch_ok}/{len(current_batch)} downloaded", GREEN))
+
+        if level < js_depth:
+            new_urls = _extract_js_urls(batch_downloaded, visited, js_only)
+            current_batch = [u for u in new_urls if u not in visited][:max_files]
+
+    # Store URL map so source-map extraction can resolve relative URLs
+    if url_map and not dry_run:
+        (files_dir / "url_map.json").write_text(json.dumps(url_map, indent=2), encoding="utf-8")
+
+    if dry_run:
+        return files_dir if urls else None
+    return files_dir if all_ok > 0 else None
 
 
 def stage_syck(targets: Iterable[Path], out_dir: Path,
@@ -409,6 +492,127 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
 
 
 # ──────────────────────────────────────────────
+# Source-map extraction (stage 5, optional)
+# ──────────────────────────────────────────────
+
+def stage_extract_source_maps(
+    files_dir: Path,
+    out_dir: Path,
+    rate_limit: float = 5.0,
+    max_per_host: int = 2,
+    timeout: int = 20,
+    dry_run: bool = False,
+) -> Path | None:
+    """Extract original sources from source maps found in downloaded files.
+
+    Handles inline ``data:`` URIs and absolute ``http(s)://`` URLs.
+    Relative URLs are resolved when *files_dir*/url_map.json exists (it
+    is written by :func:`stage_download` when *js_depth* > 0).
+
+    Returns the path to a ``sources/`` directory, or None if no source
+    maps were found.
+    """
+    sources_dir = out_dir / "sources"
+    if not dry_run:
+        sources_dir.mkdir(exist_ok=True)
+
+    if dry_run:
+        js_files = list(files_dir.rglob("*"))
+        print(color(f"DRY: would scan {len(js_files)} file(s) for source maps → {sources_dir}",
+                    GREY))
+        return sources_dir
+
+    # Build local-path → original-URL lookup from the map written by
+    # stage_download (available when js_depth > 0).
+    url_map_path = files_dir / "url_map.json"
+    local_to_url: dict[str, str] = {}
+    if url_map_path.exists():
+        url_map: dict[str, str] = json.loads(url_map_path.read_text(encoding="utf-8"))
+        local_to_url = {v: k for k, v in url_map.items()}
+
+    limiter = RateLimiter(rate_limit)
+    host_limiter = HostLimiter(max_per_host)
+    map_count = 0
+    source_count = 0
+
+    for js_file in sorted(files_dir.rglob("*")):
+        if not js_file.is_file() or js_file.name == "url_map.json":
+            continue
+        try:
+            content = js_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for map_ref in _find_source_maps(content):
+            source_map = None
+
+            if map_ref.startswith("data:"):
+                source_map = _extract_inline_source_map(map_ref)
+
+            elif map_ref.startswith(("http://", "https://")):
+                host = urlparse(map_ref).netloc
+                host_limiter.acquire(host)
+                try:
+                    limiter.wait()
+                    req = urllib.request.Request(
+                        map_ref, headers={"User-Agent": "syck-hunt/1.0"},
+                    )
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        source_map = json.loads(resp.read())
+                except Exception:
+                    continue
+                finally:
+                    host_limiter.release(host)
+
+            else:
+                # Relative URL — resolve via the URL map if available
+                rel = str(js_file.relative_to(files_dir))
+                orig_url = local_to_url.get(rel)
+                if orig_url:
+                    base = orig_url.rsplit("/", 1)[0]
+                    resolved = base + "/" + map_ref
+                    host = urlparse(resolved).netloc
+                    host_limiter.acquire(host)
+                    try:
+                        limiter.wait()
+                        req = urllib.request.Request(
+                            resolved, headers={"User-Agent": "syck-hunt/1.0"},
+                        )
+                        with urllib.request.urlopen(req, timeout=timeout) as resp:
+                            source_map = json.loads(resp.read())
+                    except Exception:
+                        continue
+                    finally:
+                        host_limiter.release(host)
+
+            if source_map and "sources" in source_map:
+                sources = source_map.get("sources", [])
+                sources_content = source_map.get("sourcesContent", [])
+                for i, src_path in enumerate(sources):
+                    src_content = sources_content[i] if i < len(sources_content) else ""
+                    if not src_content:
+                        continue
+                    safe = _safe_name(src_path)
+                    src_dest = sources_dir / safe
+                    j = 1
+                    while src_dest.exists():
+                        stem, suf = src_dest.stem, src_dest.suffix
+                        src_dest = sources_dir / f"{stem}_{j}{suf}"
+                        j += 1
+                    src_dest.write_text(src_content, encoding="utf-8")
+                    source_count += 1
+                map_count += 1
+
+    if map_count:
+        print(color(f"[+] extracted {source_count} source(s) from {map_count} source map(s)",
+                    GREEN))
+        return sources_dir
+
+    print(color("[·] no source maps found", YELL))
+    return None
+
+
+# ──────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────
 
@@ -430,12 +634,15 @@ shortcuts:
   -sp  --syck-path          -mc  --max-concurrent   -nk  --no-katana
   -so  --scan-only          -kc  --katana-conc      -nd  --no-download
   -es  --enum-subs          -dw  --download-workers -mfs --max-file-size
-  -js  --js-only            -aj  --all-files
+  -js  --js-only            -aj  --all-files          -jsd --js-depth
+  -sm  --extract-source-maps
 
 examples:
   syck-hunt target.com
   syck-hunt target.com -es                  # also enumerate subdomains
   syck-hunt target.com -nk                  # probe + download, no crawl
+  syck-hunt target.com -jsd 2               # recursively follow JS imports
+  syck-hunt target.com -sm                  # extract source maps + scan sources
   syck-hunt -l domains.txt -o ./recon -f sarif
   syck-hunt -so ./leaked-repo -s CRITICAL
   syck-hunt -ct
@@ -485,6 +692,10 @@ examples:
                        help="Concurrent download workers (default: 10)")
     crawl.add_argument("-mfs", "--max-file-size", default="5M",
                        help="Max size per scanned file (default: 5M)")
+    crawl.add_argument("-jsd", "--js-depth", type=int, default=0,
+                       metavar="N",
+                       help="Recursively follow JS imports up to depth N "
+                            "(default: 0 — no recursion)")
 
     rate = ap.add_argument_group("rate limiting")
     rate.add_argument("-rl", "--rate-limit", type=float, default=50.0,
@@ -507,6 +718,9 @@ examples:
     scan.add_argument("-sp", "--syck-path", metavar="PATH",
                       help="Path to syck.py (or 'syck' binary). "
                            "Use this if syck isn't on $PATH.")
+    scan.add_argument("-sm", "--extract-source-maps", action="store_true",
+                      help="Extract original sources from source maps "
+                           "and scan them for secrets")
 
     misc = ap.add_argument_group("misc")
     misc.add_argument("-ct", "--check-tools", action="store_true",
@@ -623,17 +837,37 @@ def main(argv: list[str] | None = None) -> int:
         js_only=args.js_only,
         rate_limit=args.rate_limit,
         max_per_host=args.max_concurrent,
+        js_depth=args.js_depth,
         dry_run=args.dry_run,
     )
     if not files and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
+    # Optional: extract sources from source maps
+    sources: Path | None = None
+    if args.extract_source_maps and files:
+        sources = stage_extract_source_maps(
+            files, out_dir,
+            rate_limit=args.rate_limit,
+            max_per_host=args.max_concurrent,
+            dry_run=args.dry_run,
+        )
+
     syck_cmd = _resolve_syck(args, interactive=not args.dry_run)
     if syck_cmd is None:
         return _summarise(out_dir, None, args.dry_run)
 
+    # Build syck targets: downloaded files + extracted sources
+    syck_targets: list[Path] = []
+    if files:
+        syck_targets.append(files)
+    if sources:
+        syck_targets.append(sources)
+    if not syck_targets:
+        syck_targets = [out_dir]
+
     report = stage_syck(
-        targets=[files] if files else [out_dir],
+        targets=syck_targets,
         out_dir=out_dir,
         severity=args.severity,
         fmt=args.format,

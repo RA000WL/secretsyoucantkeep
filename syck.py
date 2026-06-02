@@ -577,6 +577,52 @@ def iter_files(root: Path, follow_symlinks: bool = False,
 _RULE_RANK: dict[str, int] = {r.name: SEVERITY_ORDER[r.severity] for r in RULES}
 _MIN_RANK: int = SEVERITY_ORDER["LOW"]
 
+
+def load_custom_rules(path: str) -> list[Rule]:
+    """Load additional rules from a JSON file.
+
+    Expected format:
+
+        [
+          {
+            "name": "my_rule",
+            "severity": "HIGH",
+            "pattern": "regex-pattern-here"
+          },
+          ...
+        ]
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(color(f"[!] failed to load custom rules: {e}", RED), file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(data, list):
+        print(color("[!] custom rules file must contain a JSON array", RED), file=sys.stderr)
+        sys.exit(2)
+    rules: list[Rule] = []
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            print(color(f"[!] rule at index {i} must be a JSON object", RED), file=sys.stderr)
+            sys.exit(2)
+        name = entry.get("name", f"custom_{i}")
+        severity = entry.get("severity", "MEDIUM").upper()
+        pattern_str = entry.get("pattern")
+        if not pattern_str:
+            print(color(f"[!] rule '{name}' is missing 'pattern' field", RED), file=sys.stderr)
+            sys.exit(2)
+        if severity not in SEVERITY_ORDER:
+            print(color(f"[!] rule '{name}' has invalid severity '{severity}'", RED), file=sys.stderr)
+            sys.exit(2)
+        try:
+            pattern = re.compile(pattern_str)
+        except re.error as e:
+            print(color(f"[!] rule '{name}' has invalid regex: {e}", RED), file=sys.stderr)
+            sys.exit(2)
+        rules.append(Rule(name, severity, pattern))
+    return rules
+
+
 # Pre-compiled regexes used by the high-entropy sweep.  Compiled once
 # at module load instead of on every line of every file.
 _ENTROPY_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
@@ -1192,6 +1238,10 @@ EXAMPLES:
                    default=DEFAULT_MAX_FILE_SIZE, metavar="BYTES",
                    help="Skip files larger than this. Accepts K/M/G suffix "
                         f"(default: {DEFAULT_MAX_FILE_SIZE // (1024 * 1024)}M)")
+    p.add_argument("--rules", metavar="FILE",
+                   help="Load additional detection rules from a JSON file")
+    p.add_argument("--rules-only", action="store_true",
+                   help="Skip built-in rules (requires --rules)")
     p.add_argument("--no-color", action="store_true",
                    help="Disable colored output")
     p.add_argument("--progress", action="store_true",
@@ -1209,11 +1259,23 @@ def main(argv: list[str]) -> int:
     if args.no_color or args.format != "text":
         USE_COLOR = False
 
+    # Load custom rules early — both --list-rules and --scan need them
+    if args.rules:
+        custom_rules = load_custom_rules(args.rules)
+        if args.rules_only:
+            RULES.clear()
+            _RULE_RANK.clear()
+        RULES.extend(custom_rules)
+        for r in custom_rules:
+            _RULE_RANK[r.name] = SEVERITY_ORDER[r.severity]
+
     if args.list_rules:
         print(f"{'Rule':<35} {'Severity':<10} Pattern")
         print("-" * 90)
         for rule in RULES:
             print(f"{rule.name:<35} {rule.severity:<10} {rule.pattern.pattern[:45]}")
+        if args.rules_only:
+            print("\n(Built-in rules excluded via --rules-only)")
         return 0
 
     # Split local paths from URLs.  URLs get downloaded to a temp dir

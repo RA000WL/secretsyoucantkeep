@@ -99,6 +99,8 @@ stage manually or feed intermediate files into other tools.
 
 - **100+ detection rules** across cloud, source control, messaging,
   payments, AI providers, SaaS, infra, crypto, and databases
+- **Custom rules** — load your own patterns from a JSON file with `--rules`
+  (or replace built-in rules entirely with `--rules-only`)
 - **High-entropy token sweep** — catches undocumented secret formats
 - **Parallel file scanning** with `ThreadPoolExecutor` (configurable workers)
 - **6 output formats**: text, JSON, SARIF (GitHub Code Scanning), Markdown,
@@ -117,6 +119,10 @@ stage manually or feed intermediate files into other tools.
   `-rl` (rate limit), `-mc` (max concurrent), etc.
 - Skip stages with `-nk`, `-nd`
 - JS-only download (default) or all files (`-aj` / `--all-files`)
+- **Recursive JS crawling** — follow `import()`/`require()` URLs up to
+  N levels deep with `--js-depth N`
+- **Source map extraction** — extract and scan original sources from
+  source maps with `--extract-source-maps` / `-sm`
 - Dry-run (`-dr`) and tool-check (`-ct`) modes
 - Pass-through of every `syck` option (`-s`, `-f`, `-r`, `-w`)
 
@@ -280,6 +286,8 @@ syck-hunt example.com -f sarif        # SARIF output for GitHub Code Scanning
 | `-so` | `--scan-only`         | Skip recon, run syck on a local PATH         | —       |
 | `-w`  | `--workers`           | syck workers                                 | `4`     |
 | `-sp` | `--syck-path`         | Path to syck.py (if not on $PATH)            | —       |
+| `-sm` | `--extract-source-maps`| Extract sources from source maps and scan   | off     |
+| `-jsd`| `--js-depth`          | Recursively follow JS imports up to N depth  | `0`     |
 | `-ct` | `--check-tools`       | Check deps and exit                          | —       |
 | `-dr` | `--dry-run`           | Print commands without running them          | —       |
 | `-nc` | `--no-color`          | Disable coloured output                      | off     |
@@ -296,6 +304,9 @@ syck-hunt -ct                         # verify deps are installed
 syck-hunt example.com -rl 5           # slow down to 5 req/s
 syck-hunt example.com -rl 0           # unlimited (authorised pentest only)
 syck-hunt example.com -aj             # download all crawled files, not just .js
+syck-hunt example.com -jsd 2          # recursively follow JS imports 2 levels deep
+syck-hunt example.com -sm             # extract source maps + scan original sources
+syck-hunt example.com -sm -jsd 1      # combine both: deep crawl + source map scan
 ```
 
 ### Subdomain enumeration (opt-in)
@@ -402,6 +413,28 @@ syck . --severity CRITICAL || { echo "CRITICAL secrets found"; exit 1; }
 ---
 
 ## Extending — adding a new rule
+
+### Option A: Custom rules file (no code change)
+
+Create a JSON file and pass it with `--rules`:
+
+```bash
+syck . --rules my_rules.json
+```
+
+```json
+[
+  {
+    "name": "my_provider_api_key",
+    "severity": "CRITICAL",
+    "pattern": "\\bmpk_[A-Za-z0-9]{32,}\\b"
+  }
+]
+```
+
+Use `--rules-only` to replace built-in rules entirely with your own.
+
+### Option B: Edit the source
 
 Open `syck.py`, find the `RULES` list, and append a `Rule`:
 
