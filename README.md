@@ -220,14 +220,33 @@ syck-hunt -l domains.txt --output-dir ./recon
 ### Partial / specialised
 
 ```bash
+syck-hunt example.com --no-subfinder         # scan only the target, no subdomain enum
 syck-hunt example.com --no-katana            # subfinder + httpx only
 syck-hunt example.com --no-download          # recon only, no scan
+syck-hunt example.com --no-subfinder --no-katana --no-download   # probe-only
 syck-hunt --scan-only ./leaked-repo          # skip recon, scan a local path
 syck-hunt example.com --dry-run              # show commands, run nothing
 syck-hunt --check-tools                      # verify deps are installed
 syck-hunt example.com --rate-limit 1         # very gentle (1 req/s)
 syck-hunt example.com --rate-limit 0         # unlimited (authorised pentest only)
 ```
+
+### Target-only scan (fast)
+
+If you only care about `target.com` itself and not its subdomains, use
+`--no-subfinder`. This skips the (potentially slow) subdomain
+enumeration stage and writes your input domain(s) straight to the
+input slot of `httpx`:
+
+```bash
+syck-hunt example.com --no-subfinder                    # subfinder OFF, rest ON
+syck-hunt example.com --no-subfinder --no-katana        # just httpx probe + scan
+syck-hunt example.com --no-subfinder --no-katana --no-download  # probe only
+```
+
+The result is a complete report for `example.com` only — no other
+hosts are touched. Combine with `--max-files` and `--rate-limit` to
+tune the scan further.
 
 ### Output
 
