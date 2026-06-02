@@ -32,6 +32,7 @@ import argparse
 import base64
 import concurrent.futures
 import http.client
+import hashlib
 import json
 import re
 import shutil
@@ -368,6 +369,26 @@ def _download_one(url: str, dest_dir: Path,
     return None
 
 
+def _dedup_files(target_dir: Path) -> int:
+    """Remove duplicate files in *target_dir* based on SHA256 content hash.
+
+    Keeps the first file seen for each hash.  Returns the number of files
+    removed.  Skips url_map.json and hidden files (dotfiles).
+    """
+    seen: dict[str, Path] = {}
+    removed = 0
+    for p in sorted(target_dir.iterdir()):
+        if not p.is_file() or p.name.startswith(".") or p.name == "url_map.json":
+            continue
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        if h in seen:
+            p.unlink()
+            removed += 1
+        else:
+            seen[h] = p
+    return removed
+
+
 _HTML_SCRIPT_RE = re.compile(
     r"""<script[^>]*>\s*(//\s*<!\[CDATA\[)?\s*(.*?)\s*(//\]\]>)?\s*</script>""",
     re.IGNORECASE | re.DOTALL,
@@ -460,8 +481,17 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
             new_urls = _extract_js_urls(batch_downloaded, visited, js_only)
             current_batch = [u for u in new_urls if u not in visited][:max_files]
 
-    # Store URL map so source-map extraction can resolve relative URLs
+    # Deduplicate files by content hash
+    if not dry_run and all_ok > 0:
+        dupes = _dedup_files(files_dir)
+        if dupes:
+            print(color(f"[+] removed {dupes} duplicate(s) by content hash", GREEN))
+
+    # Rebuild url_map from remaining files, then store it
     if url_map and not dry_run:
+        for url, rel in list(url_map.items()):
+            if not (files_dir / rel).exists():
+                del url_map[url]
         (files_dir / "url_map.json").write_text(json.dumps(url_map, indent=2), encoding="utf-8")
 
     # Extract inline <script> blocks from downloaded HTML files
