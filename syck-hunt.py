@@ -25,11 +25,14 @@ import concurrent.futures
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 # ──────────────────────────────────────────────
 # Tiny colour helpers (no colorama dep)
@@ -59,6 +62,50 @@ def color(text: str, code: str) -> str:
 
 def hr(char: str = "─", n: int = 60) -> str:
     return char * n
+
+
+# ──────────────────────────────────────────────
+# Rate limiting (to avoid DoS'ing the target)
+# ──────────────────────────────────────────────
+
+class RateLimiter:
+    """Global token-bucket-ish limiter.  `rps=0` disables it."""
+
+    def __init__(self, rps: float):
+        self.rps = float(rps)
+        self.min_interval = (1.0 / self.rps) if self.rps > 0 else 0.0
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = self.min_interval - (now - self._last)
+            if delay > 0:
+                time.sleep(delay)
+            self._last = time.monotonic()
+
+
+class HostLimiter:
+    """Per-host concurrency cap (e.g. 2 simultaneous requests to the same host)."""
+
+    def __init__(self, max_per_host: int):
+        self.max = max(1, int(max_per_host))
+        self._sems: dict[str, threading.Semaphore] = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, host: str) -> None:
+        with self._lock:
+            sem = self._sems.setdefault(host, threading.Semaphore(self.max))
+        sem.acquire()
+
+    def release(self, host: str) -> None:
+        with self._lock:
+            sem = self._sems.get(host)
+        if sem is not None:
+            sem.release()
 
 
 # ──────────────────────────────────────────────
@@ -135,11 +182,15 @@ def stage_subfinder(domains: list[str], out_dir: Path,
 
 
 def stage_httpx(subs_file: Path, out_dir: Path,
+                rate_limit: float = 5.0,
                 dry_run: bool = False) -> Path | None:
     """Stage 2: probe for live HTTP services."""
     raw = out_dir / "02_live_hosts.txt"
     args = ["httpx", "-l", str(subs_file), "-silent", "-o", str(raw),
             "-status-code", "-title"]
+    if rate_limit > 0:
+        # httpx: -rate-limit is in milliseconds between requests
+        args += ["-rate-limit", str(int(1000 / rate_limit))]
     rc = run_cmd(args, dry_run)
     if dry_run:
         return raw
@@ -159,11 +210,16 @@ def stage_httpx(subs_file: Path, out_dir: Path,
 
 
 def stage_katana(hosts_file: Path, out_dir: Path, depth: int = 2,
+                 rate_limit: float = 5.0, concurrency: int = 10,
                  dry_run: bool = False) -> Path | None:
     """Stage 3: crawl the live hosts."""
     out = out_dir / "03_urls.txt"
     args = ["katana", "-list", str(hosts_file), "-silent",
-            "-d", str(depth), "-o", str(out), "-kf", "all"]
+            "-d", str(depth), "-o", str(out), "-kf", "all",
+            "-concurrency", str(concurrency)]
+    if rate_limit > 0:
+        # katana: -rate-limit is in seconds between requests
+        args += ["-rate-limit", str(round(1.0 / rate_limit, 3))]
     rc = run_cmd(args, dry_run)
     if dry_run:
         return out
@@ -183,7 +239,9 @@ def _safe_name(url: str) -> str:
     return name[:80]
 
 
-def _download_one(url: str, dest_dir: Path, timeout: int = 20) -> Path | None:
+def _download_one(url: str, dest_dir: Path,
+                  limiter: RateLimiter, host_limiter: HostLimiter,
+                  timeout: int = 20) -> Path | None:
     name = _safe_name(url)
     dest = dest_dir / name
     i = 1
@@ -191,20 +249,27 @@ def _download_one(url: str, dest_dir: Path, timeout: int = 20) -> Path | None:
         stem, suf = dest.stem, dest.suffix
         dest = dest_dir / f"{stem}_{i}{suf}"
         i += 1
-    req = urllib.request.Request(url, headers={"User-Agent": "syck-hunt/1.0"})
+    host = urlparse(url).netloc or "unknown"
+    host_limiter.acquire(host)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-        if not data:
+        limiter.wait()
+        req = urllib.request.Request(url, headers={"User-Agent": "syck-hunt/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            if not data:
+                return None
+            dest.write_bytes(data)
+            return dest
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             return None
-        dest.write_bytes(data)
-        return dest
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return None
+    finally:
+        host_limiter.release(host)
 
 
 def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
                    workers: int = 10, js_only: bool = True,
+                   rate_limit: float = 5.0, max_per_host: int = 2,
                    dry_run: bool = False) -> Path | None:
     """Stage 4: download JS files for offline scanning."""
     files_dir = out_dir / "downloaded"
@@ -224,16 +289,28 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
     urls = urls[:max_files]
 
     if dry_run:
-        print(color(f"DRY: would download {len(urls)} URL(s) → {files_dir}", GREY))
+        rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
+        print(color(
+            f"DRY: would download {len(urls)} URL(s) → {files_dir} "
+            f"({workers} workers, {rps}, ≤{max_per_host}/host)",
+            GREY,
+        ))
         return files_dir
     if not urls:
         print(color("[!] no URLs matched the filter", YELL))
         return None
 
-    print(color(f"[*] downloading {len(urls)} URL(s) with {workers} workers…", CYAN))
+    rps = f"{rate_limit} req/s" if rate_limit > 0 else "unlimited"
+    print(color(
+        f"[*] downloading {len(urls)} URL(s) — {workers} workers, {rps}, "
+        f"≤{max_per_host}/host…", CYAN,
+    ))
+    limiter = RateLimiter(rate_limit)
+    host_limiter = HostLimiter(max_per_host)
     ok = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as exe:
-        futs = [exe.submit(_download_one, u, files_dir) for u in urls]
+        futs = [exe.submit(_download_one, u, files_dir, limiter, host_limiter)
+                for u in urls]
         for fut in concurrent.futures.as_completed(futs):
             if fut.result() is not None:
                 ok += 1
@@ -318,6 +395,16 @@ examples:
     recon.add_argument("--max-file-size", default="5M",
                        help="Max size per scanned file (default: 5M)")
 
+    rate = ap.add_argument_group("rate limiting (be nice to the target)")
+    rate.add_argument("--rate-limit", type=float, default=5.0, metavar="RPS",
+                      help="Max requests per second across all stages "
+                           "(default: 5, 0 to disable)")
+    rate.add_argument("--max-concurrent-per-host", type=int, default=2,
+                      metavar="N", help="Max simultaneous requests to one host "
+                                        "(default: 2)")
+    rate.add_argument("--katana-concurrency", type=int, default=10,
+                      metavar="N", help="katana -concurrency (default: 10)")
+
     scan = ap.add_argument_group("scanning")
     scan.add_argument("--scan-only", metavar="PATH",
                       help="Skip recon, run syck directly on PATH (file or dir)")
@@ -392,14 +479,20 @@ def main(argv: list[str] | None = None) -> int:
     if not subs and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
-    hosts = stage_httpx(subs, out_dir, dry_run=args.dry_run)
+    hosts = stage_httpx(subs, out_dir,
+                        rate_limit=args.rate_limit,
+                        dry_run=args.dry_run)
     if not hosts and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
     if args.no_katana:
         return _summarise(out_dir, None, args.dry_run)
 
-    urls = stage_katana(hosts, out_dir, depth=args.depth, dry_run=args.dry_run)
+    urls = stage_katana(hosts, out_dir,
+                        depth=args.depth,
+                        rate_limit=args.rate_limit,
+                        concurrency=args.katana_concurrency,
+                        dry_run=args.dry_run)
     if not urls and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
@@ -412,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
         max_files=args.max_files,
         workers=args.download_workers,
         js_only=args.js_only,
+        rate_limit=args.rate_limit,
+        max_per_host=args.max_concurrent_per_host,
         dry_run=args.dry_run,
     )
     if not files and not args.dry_run:

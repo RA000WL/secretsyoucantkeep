@@ -25,6 +25,31 @@ copy them into your bounty report). The output is **not safe to share**.
   `syck . --redact --format html -o report.html`.
 - Treat anything the scanner finds as **already leaked** — rotate it.
 
+### Rate limiting (don't DoS the target)
+
+`syck-hunt` defaults to **5 requests/second** across all stages, with a cap
+of **2 simultaneous requests per host**. This is gentle enough not to
+trigger WAFs or impact small sites, while still being fast for bounty
+work.
+
+```bash
+syck-hunt example.com --rate-limit 2                 # 2 req/s (very gentle)
+syck-hunt example.com --rate-limit 20                # 20 req/s (authorised pentest)
+syck-hunt example.com --rate-limit 0                 # disable all throttling
+syck-hunt example.com --max-concurrent-per-host 1    # strictest (one at a time)
+syck-hunt example.com --katana-concurrency 5         # cap katana's own parallelism
+```
+
+The limiters affect:
+- **`httpx`** — gets `-rate-limit <ms>` (the per-request delay in ms)
+- **`katana`** — gets `-rate-limit <s>` + `-concurrency`
+- **The downloader** — uses an internal token-bucket limiter + per-host
+  semaphore, both configurable
+
+If a program is run without explicit authorisation against the target, you
+are responsible for staying within its acceptable rate. Default values err
+on the side of caution; bump them up only when you have written permission.
+
 ---
 
 ## Quick start
@@ -174,6 +199,8 @@ syck-hunt example.com --no-download          # recon only, no scan
 syck-hunt --scan-only ./leaked-repo          # skip recon, scan a local path
 syck-hunt example.com --dry-run              # show commands, run nothing
 syck-hunt --check-tools                      # verify deps are installed
+syck-hunt example.com --rate-limit 1         # very gentle (1 req/s)
+syck-hunt example.com --rate-limit 0         # unlimited (authorised pentest only)
 ```
 
 ### Output
