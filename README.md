@@ -14,7 +14,7 @@ Part of a two-script toolkit:
 | Script | Short | Role |
 |---|---|---|
 | `syck.py`              | `syck` | The scanner — pattern-matches 100+ secret formats across files & dirs |
-| `syck-hunt.py`         | `syck-hunt` | Recon pipeline — wires `subfinder → httpx → katana → syck` into one command |
+| `syck-hunt.py`         | `syck-hunt` | Recon pipeline — `domain → httpx → katana → syck` (subdomain enum is opt-in with `-es`) |
 
 ---
 
@@ -29,19 +29,19 @@ copy them into your bounty report). The output is **not safe to share**.
   `syck . --redact --format html -o report.html`.
 - Treat anything the scanner finds as **already leaked** — rotate it.
 
-### Rate limiting (don't DoS the target)
+### Rate limiting
 
-`syck-hunt` defaults to **5 requests/second** across all stages, with a cap
-of **2 simultaneous requests per host**. This is gentle enough not to
-trigger WAFs or impact small sites, while still being fast for bounty
-work.
+`syck-hunt` defaults to **50 requests/second** across all stages, with a
+cap of **5 simultaneous requests per host**. This is fast enough for
+authorised bug-bounty work on a single target. **If you don't have
+written permission, lower the limit.**
 
 ```bash
-syck-hunt example.com --rate-limit 2                 # 2 req/s (very gentle)
-syck-hunt example.com --rate-limit 20                # 20 req/s (authorised pentest)
-syck-hunt example.com --rate-limit 0                 # disable all throttling
-syck-hunt example.com --max-concurrent-per-host 1    # strictest (one at a time)
-syck-hunt example.com --katana-concurrency 5         # cap katana's own parallelism
+syck-hunt example.com -rl 5           # 5 req/s (gentle, default was this in older versions)
+syck-hunt example.com -rl 2           # 2 req/s (very gentle, WAF-aware)
+syck-hunt example.com -rl 0           # disable all throttling (pentest only)
+syck-hunt example.com -mc 1           # strictest: one request per host at a time
+syck-hunt example.com -kc 5           # cap katana's own parallelism
 ```
 
 The limiters affect:
@@ -51,8 +51,8 @@ The limiters affect:
   semaphore, both configurable
 
 If a program is run without explicit authorisation against the target, you
-are responsible for staying within its acceptable rate. Default values err
-on the side of caution; bump them up only when you have written permission.
+are responsible for staying within its acceptable rate. Drop the limit
+when in doubt.
 
 ---
 
@@ -75,11 +75,18 @@ python syck-hunt.py --scan-only ./cloned-repo --severity CRITICAL
 
 ```
                  ┌────────────┐    ┌────────┐    ┌────────┐    ┌──────────────┐    ┌────────┐
-  domain(s) ───▶ │ subfinder  │──▶ │ httpx  │──▶ │ katana │──▶ │ download JS  │──▶ │  syck  │──▶ report
+  domain(s) ───▶ │   httpx    │──▶ │ katana │──▶ │download│──▶ │    syck      │──▶ report
                  └────────────┘    └────────┘    └────────┘    └──────────────┘    └────────┘
-                  subdomains       live hosts    crawled      *.js (default)      secrets
-                                                   URLs
+                  live hosts       crawled      *.js (default)    secrets
+                  (and title)      URLs
+
+  + optionally:  subfinder (enumerates subdomains first; -es to enable)
 ```
+
+The default flow is the **fast path**: resolve the target with httpx,
+crawl with katana, download the JS, scan with syck. Subdomain
+enumeration is opt-in via `-es` — for a single-target scan you don't
+need it.
 
 Each stage writes to `recon/<target>/<timestamp>/` so you can re-run any
 stage manually or feed intermediate files into other tools.
@@ -104,11 +111,14 @@ stage manually or feed intermediate files into other tools.
 ### Pipeline (`syck-hunt.py`)
 
 - One-command recon: `syck-hunt example.com`
+- Subdomain enumeration is opt-in: `syck-hunt example.com -es`
 - Multi-target: `syck-hunt -l domains.txt`
-- Skip stages with `--no-katana`, `--no-download`
-- JS-only download (default) or all files (`--no-js-only`)
-- Dry-run (`--dry-run`) and tool-check (`--check-tools`) modes
-- Pass-through of every `syck` option (`--severity`, `--format`, `--redact`)
+- Short flags for everything: `-nk` (no katana), `-nd` (no download),
+  `-rl` (rate limit), `-mc` (max concurrent), etc.
+- Skip stages with `-nk`, `-nd`
+- JS-only download (default) or all files (`-aj` / `--all-files`)
+- Dry-run (`-dr`) and tool-check (`-ct`) modes
+- Pass-through of every `syck` option (`-s`, `-f`, `-r`, `-w`)
 
 ---
 
@@ -209,44 +219,70 @@ syck -h    # or --help
 
 ## Usage — `syck-hunt` (pipeline)
 
-### End-to-end
+### End-to-end (default: target-only, no subdomain enum)
 
 ```bash
-syck-hunt example.com
-syck-hunt example.com --js-only
-syck-hunt -l domains.txt --output-dir ./recon
+syck-hunt example.com                 # httpx → katana → download → syck
+syck-hunt example.com -es             # also enumerate subdomains first
+syck-hunt -l domains.txt -o ./recon   # multi-target
+syck-hunt example.com -f sarif        # SARIF output for GitHub Code Scanning
 ```
+
+### Short flag reference
+
+| Short | Long                  | What it does                                  | Default |
+|-------|-----------------------|-----------------------------------------------|---------|
+| `-d`  | `--depth`             | Katana crawl depth                           | `2`     |
+| `-o`  | `--output-dir`        | Output root                                  | `./recon` |
+| `-f`  | `--format`            | Report format                                | `html`  |
+| `-s`  | `--severity`          | Min severity                                 | `LOW`   |
+| `-r`  | `--redact`            | Mask secrets in output                       | off     |
+| `-l`  | `--list`              | File of domains                              | —       |
+| `-es` | `--enum-subs`         | Enable subfinder (opt-in)                    | **off** |
+| `-nk` | `--no-katana`         | Skip katana crawl                            | off     |
+| `-nd` | `--no-download`       | Skip JS download                             | off     |
+| `-js` | `--js-only`           | Download .js only (default)                  | on      |
+| `-aj` | `--all-files`         | Download all crawled URLs, not just .js      | off     |
+| `-mf` | `--max-files`         | Max files to download                        | `200`   |
+| `-dw` | `--download-workers`  | Concurrent download workers                  | `10`    |
+| `-mfs`| `--max-file-size`     | Max file size per scan                       | `5M`    |
+| `-rl` | `--rate-limit`        | Max requests/sec across all stages           | **`50`** |
+| `-mc` | `--max-concurrent`    | Max simultaneous requests per host           | `5`     |
+| `-kc` | `--katana-conc`       | Katana `-concurrency`                        | `20`    |
+| `-so` | `--scan-only`         | Skip recon, run syck on a local PATH         | —       |
+| `-w`  | `--workers`           | syck workers                                 | `4`     |
+| `-sp` | `--syck-path`         | Path to syck.py (if not on $PATH)            | —       |
+| `-ct` | `--check-tools`       | Check deps and exit                          | —       |
+| `-dr` | `--dry-run`           | Print commands without running them          | —       |
+| `-nc` | `--no-color`          | Disable coloured output                      | off     |
 
 ### Partial / specialised
 
 ```bash
-syck-hunt example.com --no-subfinder         # scan only the target, no subdomain enum
-syck-hunt example.com --no-katana            # subfinder + httpx only
-syck-hunt example.com --no-download          # recon only, no scan
-syck-hunt example.com --no-subfinder --no-katana --no-download   # probe-only
-syck-hunt --scan-only ./leaked-repo          # skip recon, scan a local path
-syck-hunt example.com --dry-run              # show commands, run nothing
-syck-hunt --check-tools                      # verify deps are installed
-syck-hunt example.com --rate-limit 1         # very gentle (1 req/s)
-syck-hunt example.com --rate-limit 0         # unlimited (authorised pentest only)
+syck-hunt example.com -nk             # httpx only (no crawl, no scan)
+syck-hunt example.com -nd             # recon only, no scan stage
+syck-hunt example.com -nk -nd         # just probe the target
+syck-hunt -so ./leaked-repo -s CRITICAL   # skip recon, scan a local path
+syck-hunt example.com -dr             # show commands, run nothing
+syck-hunt -ct                         # verify deps are installed
+syck-hunt example.com -rl 5           # slow down to 5 req/s
+syck-hunt example.com -rl 0           # unlimited (authorised pentest only)
+syck-hunt example.com -aj             # download all crawled files, not just .js
 ```
 
-### Target-only scan (fast)
+### Subdomain enumeration (opt-in)
 
-If you only care about `target.com` itself and not its subdomains, use
-`--no-subfinder`. This skips the (potentially slow) subdomain
-enumeration stage and writes your input domain(s) straight to the
-input slot of `httpx`:
+By default `syck-hunt` scans only the domain you give it — no
+subdomain enumeration. To also enumerate subdomains, add `-es`:
 
 ```bash
-syck-hunt example.com --no-subfinder                    # subfinder OFF, rest ON
-syck-hunt example.com --no-subfinder --no-katana        # just httpx probe + scan
-syck-hunt example.com --no-subfinder --no-katana --no-download  # probe only
+syck-hunt example.com -es                  # subfinder → httpx → katana → syck
+syck-hunt example.com -es -rl 2            # + be gentle
+syck-hunt -l domains.txt -es -o ./recon    # multi-target with subdomains
 ```
 
-The result is a complete report for `example.com` only — no other
-hosts are touched. Combine with `--max-files` and `--rate-limit` to
-tune the scan further.
+`-es` makes `subfinder` a hard dependency. Use `--check-tools -es`
+to confirm it's installed.
 
 ### Output
 
@@ -322,7 +358,7 @@ syck . --severity CRITICAL || { echo "CRITICAL secrets found"; exit 1; }
 ## Bug-bounty tips
 
 - **Run on a fresh clone of the target's public repos** — `syck --scan-only ./repo --severity CRITICAL`
-- **Crawl the live app** for client-side leaks — `syck-hunt target.com --js-only`
+- **Crawl the live app** for client-side leaks — `syck-hunt target.com` (JS-only is the default)
 - **Audit JS bundles** that the site ships — they often contain
   embedded API keys for analytics, payments, maps
 - **Watch for rotation gaps** — even if a key was rotated, the historical

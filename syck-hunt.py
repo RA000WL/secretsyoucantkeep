@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """
-syck-hunt.py — bug-bounty recon → secrets pipeline orchestrator.
+syck-hunt.py — scan a website's source code for exposed secrets.
 
-Wires together the ProjectDiscovery toolchain into the secrets scanner:
+Default pipeline:
 
-    subfinder  →  httpx  →  katana  →  download JS  →  syck
+    target  →  httpx  →  katana  →  download JS  →  syck
+
+  - httpx resolves the target and confirms it's live
+  - katana crawls it and produces a URL list
+  - the downloader fetches the JS (or all crawled files)
+  - syck scans the downloaded source for exposed secrets
+
+Subdomain enumeration with subfinder is **opt-in** (`-es`).
+Add it when you also want to scan the subdomains of the target.
 
 Each stage writes its output to the run directory so you can inspect or
 re-run individual stages manually.
 
 Usage:
-  syck-hunt example.com
-  syck-hunt example.com --js-only
-  syck-hunt example.com --no-download
-  syck-hunt -l domains.txt --output-dir ./recon
-  syck-hunt --scan-only ./repo --severity CRITICAL
-  syck-hunt --check-tools
-  syck-hunt example.com --dry-run
+  syck-hunt target.com                       # scan target.com
+  syck-hunt target.com -es                   # also enumerate subdomains
+  syck-hunt target.com -nk                   # probe + download, no crawl
+  syck-hunt -l domains.txt -o ./recon -f sarif
+  syck-hunt -so ./leaked-repo -s CRITICAL
+  syck-hunt -ct                              # check dependencies
+  syck-hunt target.com -dr                   # dry-run
 """
 from __future__ import annotations
 
@@ -50,7 +58,7 @@ USE_COLOR = sys.stdout.isatty()
 
 BANNER = """\
 =================================================
- syck-hunt — recon → secrets pipeline
+ syck-hunt — target → httpx → katana → syck
  {timestamp}
 =================================================
 """
@@ -123,7 +131,7 @@ def which(name: str) -> str | None:
     return shutil.which(name)
 
 
-def check_tools(skip_katana: bool = False, skip_subfinder: bool = False) -> bool:
+def check_tools(skip_katana: bool = False, want_subfinder: bool = False) -> bool:
     """Print which tools are present and warn about anything missing.
 
     `syck` is NOT in the required list — the final scan stage is a soft
@@ -131,13 +139,14 @@ def check_tools(skip_katana: bool = False, skip_subfinder: bool = False) -> bool
     just skip the syck step with a clear "how to add it" hint.  Pass
     --syck-path to point at the script directly.
 
-    Set `skip_subfinder=True` when the caller has asked for a target-only
-    scan via --no-subfinder; in that mode subfinder isn't needed.
+    Set `want_subfinder=True` when the caller has asked for subdomain
+    enumeration via --enum-subs; in the default flow subfinder isn't
+    needed and isn't checked.
     """
     required = ["httpx"]
     if not skip_katana:
         required.append("katana")
-    if not skip_subfinder:
+    if want_subfinder:
         required.append("subfinder")
     print(color("Tool check:", BOLD))
     ok = True
@@ -160,7 +169,7 @@ def check_tools(skip_katana: bool = False, skip_subfinder: bool = False) -> bool
         for t, url in TOOL_URLS.items():
             if t == "syck":
                 continue
-            if t == "subfinder" and skip_subfinder:
+            if t == "subfinder" and not want_subfinder:
                 continue
             if which(t) is None:
                 print(color(f"  {t}: {url}", GREY))
@@ -385,79 +394,104 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="syck-hunt",
-        description="Recon → secrets pipeline (subfinder → httpx → katana → syck).",
+        description=(
+            "Scan a website's source code (HTML, JS, JSON, …) for "
+            "exposed secrets.\n\n"
+            "Pipeline:  domain  →  httpx  →  katana  →  download  →  syck"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
+shortcuts:
+  -d   --depth              -mf  --max-files        -r   --redact
+  -o   --output-dir         -s   --severity         -ct  --check-tools
+  -f   --format             -w   --workers          -dr  --dry-run
+  -l   --list               -rl  --rate-limit       -nc  --no-color
+  -sp  --syck-path          -mc  --max-concurrent   -nk  --no-katana
+  -so  --scan-only          -kc  --katana-conc      -nd  --no-download
+  -es  --enum-subs          -dw  --download-workers -mfs --max-file-size
+  -js  --js-only            -aj  --all-files
+
 examples:
-  syck-hunt example.com
-  syck-hunt example.com --js-only
-  syck-hunt example.com --no-download            # recon only, no scan
-  syck-hunt -l domains.txt --output-dir ./recon
-  syck-hunt --scan-only ./leaked-repo --severity CRITICAL
-  syck-hunt --check-tools
-  syck-hunt example.com --dry-run                # print commands, run nothing
+  syck-hunt target.com
+  syck-hunt target.com -es                  # also enumerate subdomains
+  syck-hunt target.com -nk                  # probe + download, no crawl
+  syck-hunt -l domains.txt -o ./recon -f sarif
+  syck-hunt -so ./leaked-repo -s CRITICAL
+  syck-hunt -ct
+  syck-hunt target.com -dr
 """,
     )
-    ap.add_argument("domains", nargs="*", help="Target domain(s)")
+
+    ap.add_argument("domains", nargs="*",
+                    help="Target domain(s) — e.g. example.com")
     ap.add_argument("-l", "--list", metavar="FILE",
                     help="File with one domain per line")
-    ap.add_argument("--output-dir", default="./recon",
-                    help="Root output directory (default: ./recon)")
-    ap.add_argument("--severity", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
-                    default="LOW", help="Minimum syck severity (default: LOW)")
-    ap.add_argument("--format", choices=["text", "json", "sarif", "markdown",
-                                          "csv", "html"], default="html",
-                    help="syck report format (default: html)")
 
-    recon = ap.add_argument_group("recon stages")
-    recon.add_argument("--no-subfinder", action="store_true",
-                       help="Skip subdomain enumeration. Scan only the "
-                            "domain(s) you gave, not their subdomains. "
-                            "Combine with --no-katana for a fast homepage+JS scan.")
-    recon.add_argument("--no-katana", action="store_true",
-                       help="Skip katana crawling (stops after httpx)")
-    recon.add_argument("--no-download", action="store_true",
-                       help="Skip JS download (crawl-only mode)")
-    recon.add_argument("--js-only", action="store_true", default=True,
-                       help="Download only .js files (default: on)")
-    recon.add_argument("--no-js-only", dest="js_only", action="store_false",
-                       help="Download all crawled URLs, not just .js")
-    recon.add_argument("--depth", type=int, default=2,
+    out = ap.add_argument_group("output")
+    out.add_argument("-o", "--output-dir", default="./recon",
+                     help="Output root (default: ./recon)")
+    out.add_argument("-s", "--severity",
+                     choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                     default="LOW", help="Min syck severity (default: LOW)")
+    out.add_argument("-f", "--format",
+                     choices=["text", "json", "sarif", "markdown",
+                              "csv", "html"], default="html",
+                     help="Report format (default: html)")
+    out.add_argument("-r", "--redact", action="store_true",
+                     help="Mask secrets in the report (default: shown in full)")
+
+    stages = ap.add_argument_group("recon stages")
+    stages.add_argument("-es", "--enum-subs", action="store_true",
+                        help="Enable subdomain enumeration with subfinder "
+                             "(default: off, scan only the input domain)")
+    stages.add_argument("-nk", "--no-katana", action="store_true",
+                        help="Skip katana crawl (probe-only)")
+    stages.add_argument("-nd", "--no-download", action="store_true",
+                        help="Skip JS download (crawl-only)")
+    stages.add_argument("-js", "--js-only", action="store_true", default=True,
+                        help="Download only .js files (default: on)")
+    stages.add_argument("-aj", "--all-files", dest="js_only",
+                        action="store_false",
+                        help="Download all crawled URLs, not just .js")
+
+    crawl = ap.add_argument_group("crawl tuning")
+    crawl.add_argument("-d", "--depth", type=int, default=2,
                        help="Katana crawl depth (default: 2)")
-    recon.add_argument("--max-files", type=int, default=200,
-                       help="Max files to download per run (default: 200)")
-    recon.add_argument("--download-workers", type=int, default=10,
+    crawl.add_argument("-mf", "--max-files", type=int, default=200,
+                       help="Max files to download (default: 200)")
+    crawl.add_argument("-dw", "--download-workers", type=int, default=10,
                        help="Concurrent download workers (default: 10)")
-    recon.add_argument("--max-file-size", default="5M",
+    crawl.add_argument("-mfs", "--max-file-size", default="5M",
                        help="Max size per scanned file (default: 5M)")
 
-    rate = ap.add_argument_group("rate limiting (be nice to the target)")
-    rate.add_argument("--rate-limit", type=float, default=5.0, metavar="RPS",
-                      help="Max requests per second across all stages "
-                           "(default: 5, 0 to disable)")
-    rate.add_argument("--max-concurrent-per-host", type=int, default=2,
-                      metavar="N", help="Max simultaneous requests to one host "
-                                        "(default: 2)")
-    rate.add_argument("--katana-concurrency", type=int, default=10,
-                      metavar="N", help="katana -concurrency (default: 10)")
+    rate = ap.add_argument_group("rate limiting")
+    rate.add_argument("-rl", "--rate-limit", type=float, default=50.0,
+                      metavar="RPS",
+                      help="Max requests/sec across all stages "
+                           "(default: 50, 0 to disable)")
+    rate.add_argument("-mc", "--max-concurrent", type=int, default=5,
+                      metavar="N",
+                      help="Max simultaneous requests per host (default: 5)")
+    rate.add_argument("-kc", "--katana-conc", type=int, default=20,
+                      metavar="N", help="katana -concurrency (default: 20)")
 
     scan = ap.add_argument_group("scanning")
-    scan.add_argument("--scan-only", metavar="PATH",
-                      help="Skip recon, run syck directly on PATH (file or dir)")
-    scan.add_argument("--syck-workers", type=int, default=4,
+    scan.add_argument("-so", "--scan-only", metavar="PATH",
+                      help="Skip recon, run syck directly on PATH "
+                           "(file or dir)")
+    scan.add_argument("-w", "--workers", type=int, default=4,
+                      dest="syck_workers",
                       help="syck --workers (default: 4)")
-    scan.add_argument("--redact", action="store_true",
-                      help="Mask secrets in the report (default: shown in full)")
-    scan.add_argument("--syck-path", metavar="PATH",
-                      help="Full path to syck.py (or 'syck' binary). "
+    scan.add_argument("-sp", "--syck-path", metavar="PATH",
+                      help="Path to syck.py (or 'syck' binary). "
                            "Use this if syck isn't on $PATH.")
 
     misc = ap.add_argument_group("misc")
-    misc.add_argument("--check-tools", action="store_true",
+    misc.add_argument("-ct", "--check-tools", action="store_true",
                       help="Check which dependencies are present and exit")
-    misc.add_argument("--dry-run", action="store_true",
-                      help="Print the commands without executing them")
-    misc.add_argument("--no-color", action="store_true",
+    misc.add_argument("-dr", "--dry-run", action="store_true",
+                      help="Print commands without executing them")
+    misc.add_argument("-nc", "--no-color", action="store_true",
                       help="Disable coloured output")
     return ap
 
@@ -473,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_tools:
         return 0 if check_tools(skip_katana=args.no_katana,
-                                skip_subfinder=args.no_subfinder) else 1
+                                want_subfinder=args.enum_subs) else 1
 
     domains: list[str] = list(args.domains or [])
     if args.list:
@@ -503,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         check_tools(skip_katana=True)
     else:
         if not check_tools(skip_katana=args.no_katana,
-                            skip_subfinder=args.no_subfinder):
+                            want_subfinder=args.enum_subs):
             if not args.dry_run:
                 return 1
 
@@ -526,17 +560,17 @@ def main(argv: list[str] | None = None) -> int:
         return _summarise(out_dir, report, args.dry_run)
 
     # Mode 2: full recon → download → syck
-    if args.no_subfinder:
-        print(color("[*] --no-subfinder: skipping subdomain enumeration, "
-                    f"scanning {len(domains)} target domain(s) directly",
-                    YELL))
-        # Write the input domains straight to a file in subfinder's slot.
-        # stage_httpx doesn't care where the host list came from.
+    if args.enum_subs:
+        print(color(f"[*] -es: enumerating subdomains for {len(domains)} "
+                    f"target domain(s) with subfinder", CYAN))
+        subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
+    else:
+        # Default: skip subdomain enumeration.  Write the input domains
+        # straight to a file in subfinder's slot — stage_httpx doesn't
+        # care where the host list came from.
         subs = out_dir / "00_targets.txt"
         if not args.dry_run:
             subs.write_text("\n".join(domains) + "\n", encoding="utf-8")
-    else:
-        subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
     if not subs and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
@@ -552,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     urls = stage_katana(hosts, out_dir,
                         depth=args.depth,
                         rate_limit=args.rate_limit,
-                        concurrency=args.katana_concurrency,
+                        concurrency=args.katana_conc,
                         dry_run=args.dry_run)
     if not urls and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
@@ -567,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.download_workers,
         js_only=args.js_only,
         rate_limit=args.rate_limit,
-        max_per_host=args.max_concurrent_per_host,
+        max_per_host=args.max_concurrent,
         dry_run=args.dry_run,
     )
     if not files and not args.dry_run:
