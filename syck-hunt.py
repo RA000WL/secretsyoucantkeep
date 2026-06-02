@@ -223,13 +223,15 @@ def stage_httpx(subs_file: Path, out_dir: Path,
         # httpx: -rate-limit is in milliseconds between requests
         args += ["-rate-limit", str(int(1000 / rate_limit))]
     rc = run_cmd(args, dry_run)
-    if dry_run:
-        return raw
     if rc != 0 or not raw.exists() or raw.stat().st_size == 0:
+        if dry_run:
+            return out_dir / "02_live_urls.txt"
         print(color("[!] httpx found no live hosts", YELL))
         return None
     # httpx-with-flags output is "<url> [<code>] [<title>]"; keep just URLs
     urls = out_dir / "02_live_urls.txt"
+    if dry_run:
+        return urls
     with urls.open("w", encoding="utf-8") as dst:
         for line in raw.open(encoding="utf-8", errors="replace"):
             first = line.split()[0] if line.strip() else ""
@@ -248,9 +250,14 @@ def stage_katana(hosts_file: Path, out_dir: Path, depth: int = 2,
     args = ["katana", "-list", str(hosts_file), "-silent",
             "-d", str(depth), "-o", str(out), "-kf", "all",
             "-concurrency", str(concurrency)]
-    if rate_limit > 0:
-        # katana: -rate-limit is in seconds between requests
-        args += ["-rate-limit", str(round(1.0 / rate_limit, 3))]
+    if 0 < rate_limit <= 1:
+        # katana: -rate-limit is INTEGER seconds per host.  For any
+        # rate faster than 1 rps the value would round to 0 (and
+        # katana rejects non-integer strings with 'parse error'),
+        # so we only pass it for slow scans.  For faster scans the
+        # downloader's token-bucket per-second limit does the
+        # throttling.
+        args += ["-rate-limit", str(round(1.0 / rate_limit))]
     rc = run_cmd(args, dry_run)
     if dry_run:
         return out
