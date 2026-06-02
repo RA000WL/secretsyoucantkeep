@@ -188,7 +188,14 @@ Reload with `source ~/.zshrc` (or `~/.bashrc`).
 syck .                              # scan current dir, show secrets in full
 syck /path/to/repo                  # scan a repo
 syck file.env secrets.yaml          # scan specific files
+syck https://example.com/app.bundle.js   # scan a remote JS file directly
+syck ./repo https://cdn.x/lib.js   # mix local paths and URLs
 ```
+
+> URLs are downloaded to a temp file in the system temp dir, scanned,
+> then deleted on exit.  Bad URLs print a warning to stderr and are
+> skipped — they don't abort the run.  Combine with any other flag
+> (`--severity`, `--format`, `--redact`, …) just like local files.
 
 ### Filter & format
 

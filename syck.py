@@ -15,13 +15,18 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
+import tempfile
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from html import escape as html_escape
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 # ──────────────────────────────────────────────
 # ANSI color codes (disabled with --no-color)
@@ -719,6 +724,47 @@ def _should_skip_file(path: Path) -> bool:
     return path.suffix.lower() in _SKIP_SUFFIXES
 
 
+def _safe_name_from_url(url: str) -> str:
+    """Pick a filesystem-safe filename based on the URL's last segment."""
+    last = url.split("?", 1)[0].rsplit("/", 1)[-1] or "index.html"
+    name = "".join(c for c in last if c.isalnum() or c in "._-")
+    if not name:
+        name = "index.html"
+    return name[:80]
+
+
+def _fetch_url(url: str, dest_dir: Path, timeout: int = 20) -> Path | None:
+    """Download a single URL into dest_dir.  Returns the local path on
+    success, None on any error.  Network errors are non-fatal — the
+    caller just skips the URL."""
+    name = _safe_name_from_url(url)
+    dest = dest_dir / name
+    i = 1
+    while dest.exists():
+        stem, suf = dest.stem, dest.suffix
+        dest = dest_dir / f"{stem}_{i}{suf}"
+        i += 1
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "syck/2.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(color(f"[!] failed to fetch {url}: {exc}", YELLOW),
+              file=sys.stderr)
+        return None
+    if not data:
+        return None
+    try:
+        dest.write_bytes(data)
+    except OSError as exc:
+        print(color(f"[!] failed to write {dest}: {exc}", YELLOW),
+              file=sys.stderr)
+        return None
+    print(color(f"[+] fetched {url} → {dest.name} ({len(data):,} bytes)",
+                GREY), file=sys.stderr)
+    return dest
+
+
 def scan_paths(
     targets: list[Path],
     skip_binary: bool = True,
@@ -1113,11 +1159,15 @@ EXAMPLES:
   %(prog)s . --workers 8 --max-file-size 5M
   %(prog)s . --exclude "test|mock"        skip paths matching regex
   %(prog)s file1.env file2.yaml           scan specific files
+  %(prog)s https://example.com/app.bundle.js    scan a remote JS file
   %(prog)s . --list-rules                 list all built-in rules and exit
 """,
     )
     p.add_argument("paths", nargs="*", default=["."],
-                   help="Files or directories to scan (default: current directory)")
+                   help="Files, directories, or URLs to scan. "
+                        "URLs (http://, https://) are downloaded to a "
+                        "temp file, scanned, then deleted. "
+                        "(default: current directory)")
     p.add_argument("--severity", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
                    default="LOW", help="Minimum severity to report (default: LOW)")
     p.add_argument("--format", choices=list(FORMATTERS.keys()),
@@ -1166,27 +1216,47 @@ def main(argv: list[str]) -> int:
             print(f"{rule.name:<35} {rule.severity:<10} {rule.pattern.pattern[:45]}")
         return 0
 
-    targets = [Path(p).resolve() for p in args.paths]
+    # Split local paths from URLs.  URLs get downloaded to a temp dir
+    # and the dir is added to the targets list — scan_paths treats
+    # dirs and files uniformly.  The temp dir is cleaned up below.
+    local_paths = [p for p in args.paths if not p.startswith(("http://", "https://"))]
+    urls = [p for p in args.paths if p.startswith(("http://", "https://"))]
+
+    targets = [Path(p).resolve() for p in local_paths]
     missing = [t for t in targets if not t.exists()]
     if missing:
         for m in missing:
             print(color(f"error: path does not exist: {m}", RED), file=sys.stderr)
         return 2
 
-    exclude_patterns = [re.compile(pat) for pat in args.exclude] if args.exclude else None
-    redact_secrets = args.redact or bool(args.show_secrets)
+    temp_dir: Path | None = None
+    if urls:
+        temp_dir = Path(tempfile.mkdtemp(prefix="syck-urls-"))
+        print(color(f"[*] fetching {len(urls)} URL(s) into {temp_dir}",
+                    GREY), file=sys.stderr)
+        for u in urls:
+            fetched = _fetch_url(u, temp_dir)
+            if fetched is not None:
+                targets.append(fetched)
 
-    findings = scan_paths(
-        targets=targets,
-        skip_binary=not args.no_skip_binary,
-        follow_symlinks=args.follow_symlinks,
-        min_severity=args.severity,
-        high_entropy_scan=not args.no_entropy,
-        exclude_patterns=exclude_patterns,
-        workers=max(1, args.workers),
-        max_file_size=args.max_file_size,
-        progress=args.progress,
-    )
+    try:
+        exclude_patterns = [re.compile(pat) for pat in args.exclude] if args.exclude else None
+        redact_secrets = args.redact or bool(args.show_secrets)
+
+        findings = scan_paths(
+            targets=targets,
+            skip_binary=not args.no_skip_binary,
+            follow_symlinks=args.follow_symlinks,
+            min_severity=args.severity,
+            high_entropy_scan=not args.no_entropy,
+            exclude_patterns=exclude_patterns,
+            workers=max(1, args.workers),
+            max_file_size=args.max_file_size,
+            progress=args.progress,
+        )
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     formatter = FORMATTERS[args.format]
     if args.format == "text":
