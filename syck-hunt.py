@@ -124,8 +124,14 @@ def which(name: str) -> str | None:
 
 
 def check_tools(skip_katana: bool = False) -> bool:
-    """Print which tools are present and warn about anything missing."""
-    required = ["subfinder", "httpx", "syck"]
+    """Print which tools are present and warn about anything missing.
+
+    `syck` is NOT in the required list — the final scan stage is a soft
+    dependency.  If it's not on PATH, the recon stages still run and we
+    just skip the syck step with a clear "how to add it" hint.  Pass
+    --syck-path to point at the script directly.
+    """
+    required = ["subfinder", "httpx"]
     if not skip_katana:
         required.append("katana")
     print(color("Tool check:", BOLD))
@@ -137,9 +143,18 @@ def check_tools(skip_katana: bool = False) -> bool:
         else:
             print(color(f"  [✗] {t:<11} not found in PATH", RED))
             ok = False
+    syck_path = which("syck")
+    if syck_path:
+        print(color(f"  [✓] {'syck':<11} {syck_path}", GREEN))
+    else:
+        print(color("  [·] syck        not on PATH (scan stage will be skipped)", YELL))
+        print(color(f"         {TOOL_URLS['syck']}", GREY))
+        print(color("         or pass --syck-path /full/path/to/syck.py", GREY))
     if not ok:
         print(color("\nInstall missing tools:", YELL))
         for t, url in TOOL_URLS.items():
+            if t == "syck":
+                continue
             if which(t) is None:
                 print(color(f"  {t}: {url}", GREY))
     return ok
@@ -321,14 +336,24 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
 def stage_syck(targets: Iterable[Path], out_dir: Path,
                severity: str = "LOW", fmt: str = "html",
                redact: bool = False, workers: int = 4,
-               max_file_size: str = "5M", dry_run: bool = False) -> Path | None:
-    """Stage 5: scan downloaded files with syck."""
+               max_file_size: str = "5M",
+               syck_cmd: list[str] | None = None,
+               dry_run: bool = False) -> Path | None:
+    """Stage 5: scan downloaded files with syck.
+
+    `syck_cmd` lets the caller override the executable — by default we
+    try `syck` on PATH.  Pass `["python3", "/path/to/syck.py"]` (or
+    similar) when syck isn't on PATH.  Returns None if syck is not
+    available; caller is expected to surface a hint in that case.
+    """
     targets = [t for t in targets if t is not None]
     if not targets:
         return None
+    if syck_cmd is None:
+        syck_cmd = ["syck"]
     ext = "html" if fmt == "html" else fmt
     out = out_dir / f"04_syck_report.{ext}"
-    args = ["syck", *[str(t) for t in targets],
+    args = [*syck_cmd, *[str(t) for t in targets],
             "--format", fmt, "-o", str(out),
             "--severity", severity,
             "--workers", str(workers),
@@ -336,7 +361,7 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
     if redact:
         args.append("--redact")
     if dry_run:
-        print(color(f"DRY: {' '.join(args)}", GREY))
+        print(color(f"DRY: {' '.join(str(a) for a in args)}", GREY))
         return out
     rc = run_cmd(args, dry_run)
     if rc not in (0, 1) or not out.exists():
@@ -412,6 +437,9 @@ examples:
                       help="syck --workers (default: 4)")
     scan.add_argument("--redact", action="store_true",
                       help="Mask secrets in the report (default: shown in full)")
+    scan.add_argument("--syck-path", metavar="PATH",
+                      help="Full path to syck.py (or 'syck' binary). "
+                           "Use this if syck isn't on $PATH.")
 
     misc = ap.add_argument_group("misc")
     misc.add_argument("--check-tools", action="store_true",
@@ -456,12 +484,21 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(color(f"[*] run directory: {out_dir}", CYAN))
 
-    if not check_tools(skip_katana=args.no_katana or args.scan_only is not None):
-        if not args.dry_run:
-            return 1
+    # In scan-only mode the recon tools (subfinder/httpx/katana) aren't
+    # needed — just print the tool check and continue.  In full-recon
+    # mode, missing tools are a hard fail.
+    if args.scan_only:
+        check_tools(skip_katana=True)
+    else:
+        if not check_tools(skip_katana=args.no_katana):
+            if not args.dry_run:
+                return 1
 
     # Mode 1: scan-only
     if args.scan_only:
+        syck_cmd = _resolve_syck(args, interactive=not args.dry_run)
+        if syck_cmd is None:
+            return _summarise(out_dir, None, args.dry_run)
         report = stage_syck(
             targets=[Path(args.scan_only)],
             out_dir=out_dir,
@@ -470,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
             redact=args.redact,
             workers=args.syck_workers,
             max_file_size=args.max_file_size,
+            syck_cmd=syck_cmd,
             dry_run=args.dry_run,
         )
         return _summarise(out_dir, report, args.dry_run)
@@ -512,6 +550,10 @@ def main(argv: list[str] | None = None) -> int:
     if not files and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
+    syck_cmd = _resolve_syck(args, interactive=not args.dry_run)
+    if syck_cmd is None:
+        return _summarise(out_dir, None, args.dry_run)
+
     report = stage_syck(
         targets=[files] if files else [out_dir],
         out_dir=out_dir,
@@ -520,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
         redact=args.redact,
         workers=args.syck_workers,
         max_file_size=args.max_file_size,
+        syck_cmd=syck_cmd,
         dry_run=args.dry_run,
     )
     return _summarise(out_dir, report, args.dry_run)
@@ -530,17 +573,48 @@ def _summarise(out_dir: Path, report: Path | None, dry_run: bool) -> int:
     print(color(" Pipeline summary", BOLD))
     print(color(hr("═"), BOLD))
     for f in sorted(out_dir.iterdir()):
+        rel = str(f.relative_to(out_dir))
         if f.is_file():
             size = f.stat().st_size
-            print(f"  {f.relative_to(out_dir):<30}  {size:>8} bytes")
+            print(f"  {rel:<30}  {size:>8} bytes")
         elif f.is_dir():
             count = sum(1 for _ in f.rglob("*") if _.is_file())
-            print(f"  {f.relative_to(out_dir)}/  ({count} file(s))")
+            print(f"  {rel}/  ({count} file(s))")
     if report:
         print(color(f"\n[✓] final report: {report}", GREEN))
     elif not dry_run:
         print(color("\n[i] recon complete, no scan run", YELL))
     return 0
+
+
+def _resolve_syck(args, interactive: bool) -> list[str] | None:
+    """Figure out how to invoke syck.  Returns a command list, or None.
+
+    Resolution order:
+      1. --syck-path (explicit, may point to .py or a binary)
+      2. `syck` on $PATH
+      3. Friendly hint + return None
+    """
+    if args.syck_path:
+        p = Path(args.syck_path)
+        if not p.exists():
+            print(color(f"[!] --syck-path {p} does not exist", RED),
+                  file=sys.stderr)
+            return None
+        # .py file → invoke via python
+        if p.suffix == ".py":
+            return [sys.executable, str(p)]
+        return [str(p)]
+    if which("syck"):
+        return ["syck"]
+    if interactive:
+        print(color("\n[!] 'syck' is not on $PATH — skipping the scan stage.", YELL))
+        print(color("    To enable it, pick one:", YELL))
+        print(color("      a) Symlink the script:    ln -s /path/to/syck.py ~/bin/syck", YELL))
+        print(color("      b) Add the script dir to PATH in ~/.zshenv:", YELL))
+        print(color("           export PATH=\"$HOME/secretsyoucantkeep:$PATH\"", YELL))
+        print(color("      c) Pass it explicitly:    --syck-path /path/to/syck.py", YELL))
+    return None
 
 
 if __name__ == "__main__":
