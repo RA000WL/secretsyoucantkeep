@@ -310,14 +310,17 @@ to confirm it's installed.
 ```
 recon/
 └── example.com/
-    └── 20260602_223729/
-        ├── 00_targets.txt        ← your input domain(s), or subfinder output
-        ├── 02_live_hosts.txt     ← httpx output (status + title)
-        ├── 02_live_urls.txt      ← clean URL list (input to katana)
-        ├── 03_urls.txt           ← katana crawl output
-        ├── downloaded/           ← JS files pulled by the downloader
-        └── 04_syck_report.text   ← the report (printed to terminal too)
+    ├── 00_targets.txt        ← your input domain(s), or subfinder output
+    ├── 02_live_hosts.txt     ← httpx output (status + title)
+    ├── 02_live_urls.txt      ← clean URL list (input to katana)
+    ├── 03_urls.txt           ← katana crawl output
+    ├── downloaded/           ← JS files pulled by the downloader
+    └── 04_syck_report.text   ← the report (printed to terminal too)
 ```
+
+> Re-running `syck-hunt` on the same target overwrites the contents
+> of that target's folder.  If you want history, put `./recon` under
+> git, or `cp -r recon/<target> <backup>` before re-running.
 
 ---
 

@@ -547,8 +547,7 @@ def main(argv: list[str] | None = None) -> int:
         target_label = Path(args.scan_only).resolve().name
     else:
         target_label = domains[0] if len(domains) == 1 else f"multi_{len(domains)}"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(args.output_dir) / target_label / ts
+    out_dir = Path(args.output_dir) / target_label
     out_dir.mkdir(parents=True, exist_ok=True)
     print(color(f"[*] run directory: {out_dir}", CYAN))
 
