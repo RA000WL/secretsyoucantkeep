@@ -1,0 +1,9 @@
+# Force LF line endings for shell scripts so they run correctly on Unix
+# (WSL, macOS, Linux) even when the repo is cloned on Windows.
+*.sh        eol=lf
+install.sh  eol=lf
+
+# Keep Python at LF too — avoids CRLF warnings on every commit.
+*.py        eol=lf
+syck.py     eol=lf
+syck-hunt.py eol=lf

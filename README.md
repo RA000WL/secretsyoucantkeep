@@ -135,14 +135,36 @@ cd secretsyoucantkeep/Script
 chmod +x syck.py syck-hunt.py   # Unix only
 ```
 
-### Shell aliases (optional)
+### One-line installer (recommended for Linux / macOS / WSL)
 
-Add to `~/.zshrc` or `~/.bashrc`:
+```bash
+./install.sh             # installs to ~/bin and patches your shell rc files
+./install.sh --uninstall # undoes the install
+./install.sh --prefix /usr/local/bin   # system-wide install
+```
+
+The installer:
+- Drops `syck` and `syck-hunt` shims into `~/bin/`
+- Patches `~/.zshenv` and `~/.profile` so the tools are visible to
+  **non-interactive** shells (the classic WSL/`.zshrc`-alias gotcha)
+- Also patches `~/.zshrc` and `~/.bashrc` for interactive shells
+- Is **idempotent** — safe to re-run; uses marker comments to skip work
+  that's already done
+- Handles CRLF line endings if the repo was cloned on Windows
+
+### Shell aliases (alternative, no installer needed)
+
+Add to `~/.zshrc` or `~/.bashrc` if you'd rather not run the installer:
 
 ```bash
 alias syck='python /path/to/syck.py'
 syck-hunt() { python /path/to/syck-hunt.py "$@"; }
 ```
+
+> **Heads up:** aliases only work in *interactive* shells. If you want
+> `syck` to be callable from `wsl -d kali -- bash -c "syck"` or from
+> `syck-hunt`'s internal `subprocess.run`, use the installer — it puts
+> real binaries on `$PATH` instead of aliases.
 
 Reload with `source ~/.zshrc` (or `~/.bashrc`).
 
@@ -319,6 +341,8 @@ Test with the dummy file (`dummy_secrets.env`) or `syck --list-rules`.
 ```
 syck.py              # the scanner (syck)
 syck-hunt.py         # the recon pipeline (syck-hunt)
+install.sh           # one-line installer (Linux / macOS / WSL)
+.gitattributes       # forces LF line endings for shell scripts
 dummy_secrets.env    # test fixture with 100+ dummy secrets
 ```
 
