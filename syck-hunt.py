@@ -123,17 +123,22 @@ def which(name: str) -> str | None:
     return shutil.which(name)
 
 
-def check_tools(skip_katana: bool = False) -> bool:
+def check_tools(skip_katana: bool = False, skip_subfinder: bool = False) -> bool:
     """Print which tools are present and warn about anything missing.
 
     `syck` is NOT in the required list — the final scan stage is a soft
     dependency.  If it's not on PATH, the recon stages still run and we
     just skip the syck step with a clear "how to add it" hint.  Pass
     --syck-path to point at the script directly.
+
+    Set `skip_subfinder=True` when the caller has asked for a target-only
+    scan via --no-subfinder; in that mode subfinder isn't needed.
     """
-    required = ["subfinder", "httpx"]
+    required = ["httpx"]
     if not skip_katana:
         required.append("katana")
+    if not skip_subfinder:
+        required.append("subfinder")
     print(color("Tool check:", BOLD))
     ok = True
     for t in required:
@@ -154,6 +159,8 @@ def check_tools(skip_katana: bool = False) -> bool:
         print(color("\nInstall missing tools:", YELL))
         for t, url in TOOL_URLS.items():
             if t == "syck":
+                continue
+            if t == "subfinder" and skip_subfinder:
                 continue
             if which(t) is None:
                 print(color(f"  {t}: {url}", GREY))
@@ -403,6 +410,10 @@ examples:
                     help="syck report format (default: html)")
 
     recon = ap.add_argument_group("recon stages")
+    recon.add_argument("--no-subfinder", action="store_true",
+                       help="Skip subdomain enumeration. Scan only the "
+                            "domain(s) you gave, not their subdomains. "
+                            "Combine with --no-katana for a fast homepage+JS scan.")
     recon.add_argument("--no-katana", action="store_true",
                        help="Skip katana crawling (stops after httpx)")
     recon.add_argument("--no-download", action="store_true",
@@ -461,7 +472,8 @@ def main(argv: list[str] | None = None) -> int:
                 BOLD))
 
     if args.check_tools:
-        return 0 if check_tools() else 1
+        return 0 if check_tools(skip_katana=args.no_katana,
+                                skip_subfinder=args.no_subfinder) else 1
 
     domains: list[str] = list(args.domains or [])
     if args.list:
@@ -490,7 +502,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.scan_only:
         check_tools(skip_katana=True)
     else:
-        if not check_tools(skip_katana=args.no_katana):
+        if not check_tools(skip_katana=args.no_katana,
+                            skip_subfinder=args.no_subfinder):
             if not args.dry_run:
                 return 1
 
@@ -513,7 +526,17 @@ def main(argv: list[str] | None = None) -> int:
         return _summarise(out_dir, report, args.dry_run)
 
     # Mode 2: full recon → download → syck
-    subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
+    if args.no_subfinder:
+        print(color("[*] --no-subfinder: skipping subdomain enumeration, "
+                    f"scanning {len(domains)} target domain(s) directly",
+                    YELL))
+        # Write the input domains straight to a file in subfinder's slot.
+        # stage_httpx doesn't care where the host list came from.
+        subs = out_dir / "00_targets.txt"
+        if not args.dry_run:
+            subs.write_text("\n".join(domains) + "\n", encoding="utf-8")
+    else:
+        subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
     if not subs and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
