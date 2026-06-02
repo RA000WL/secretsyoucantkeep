@@ -1,0 +1,4 @@
+subfinder -d target.com -all -silent | anew subs.txt
+assetfinder -subs-only target.com | anew subs.txt
+findomain -t target.com -q | anew subs.txt
+cat subs.txt | puredns resolve subs.txt --resolvers ~/wordlists/resolvers-trusted.txt | anew alive.txt
