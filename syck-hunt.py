@@ -357,7 +357,7 @@ def stage_download(urls_file: Path, out_dir: Path, max_files: int = 200,
 
 
 def stage_syck(targets: Iterable[Path], out_dir: Path,
-               severity: str = "LOW", fmt: str = "html",
+               severity: str = "LOW", fmt: str = "text",
                redact: bool = False, workers: int = 4,
                max_file_size: str = "5M",
                syck_cmd: list[str] | None = None,
@@ -368,6 +368,11 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
     try `syck` on PATH.  Pass `["python3", "/path/to/syck.py"]` (or
     similar) when syck isn't on PATH.  Returns None if syck is not
     available; caller is expected to surface a hint in that case.
+
+    For fmt='text' the report is also printed to stdout after syck
+    finishes (terminal-friendly).  For other formats the report is
+    written to a file and the path is shown — pass -f text if you
+    want the report in your terminal.
     """
     targets = [t for t in targets if t is not None]
     if not targets:
@@ -391,6 +396,15 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
         print(color("[!] syck did not produce a report", YELL))
         return None
     print(color(f"[+] report → {out}", GREEN))
+    if fmt == "text":
+        # Stream the report to the terminal so the user can see findings
+        # without having to open the file.  ANSI codes survive the
+        # round-trip because they're written verbatim.
+        print()
+        print(color("═" * 60, GREY))
+        print(color(f"  syck report ({out})", BOLD))
+        print(color("═" * 60, GREY))
+        print(out.read_text(encoding="utf-8", errors="replace"))
     return out
 
 
@@ -442,8 +456,9 @@ examples:
                      default="LOW", help="Min syck severity (default: LOW)")
     out.add_argument("-f", "--format",
                      choices=["text", "json", "sarif", "markdown",
-                              "csv", "html"], default="html",
-                     help="Report format (default: html)")
+                              "csv", "html"], default="text",
+                     help="Report format (default: text — printed to terminal "
+                          "after the scan; use html/json/sarif for files)")
     out.add_argument("-r", "--redact", action="store_true",
                      help="Mask secrets in the report (default: shown in full)")
 

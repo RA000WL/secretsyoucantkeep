@@ -209,6 +209,27 @@ syck . --exclude "test|mock|spec"   # skip noisy paths
 syck . --no-entropy                 # disable the high-entropy sweep
 ```
 
+### Reducing high-entropy false positives
+
+The high-entropy sweep only runs on lines that look like they could
+carry a secret (keywords: `api`, `key`, `token`, `secret`, `password`,
+`auth`, `credential`, `bearer`, `aws`, `gcp`, `azure`, `jwt`, `oauth`,
+`ssh_key`, …). This keeps the signal-to-noise ratio high.
+
+It is also **skipped entirely on minified/bundled JS** (detected by
+file name suffix — `.min.js`, `.bundle.js` — or by the file having
+very few long lines), because those files contain thousands of
+long tokens that all look high-entropy but are just minified
+identifiers and base64 data URIs.
+
+If you want to scan minified JS anyway, use `--no-entropy` is **not**
+what you want (that disables the sweep globally). Instead, just run
+without the entropy filter — but expect noise. Or use
+`--exclude '.*\.min\.js'` to scope it.
+
+Source map files (`.map`) are also skipped by default — they are
+mostly base64-encoded source code that the entropy sweep misclassifies.
+
 ### Full option list
 
 ```
@@ -234,7 +255,7 @@ syck-hunt example.com -f sarif        # SARIF output for GitHub Code Scanning
 |-------|-----------------------|-----------------------------------------------|---------|
 | `-d`  | `--depth`             | Katana crawl depth                           | `2`     |
 | `-o`  | `--output-dir`        | Output root                                  | `./recon` |
-| `-f`  | `--format`            | Report format                                | `html`  |
+| `-f`  | `--format`            | Report format                                | `text`  |
 | `-s`  | `--severity`          | Min severity                                 | `LOW`   |
 | `-r`  | `--redact`            | Mask secrets in output                       | off     |
 | `-l`  | `--list`              | File of domains                              | —       |
@@ -290,12 +311,12 @@ to confirm it's installed.
 recon/
 └── example.com/
     └── 20260602_223729/
-        ├── 01_subdomains.txt
-        ├── 02_live_hosts.txt
-        ├── 02_live_urls.txt
-        ├── 03_urls.txt
-        ├── downloaded/        ← JS files pulled by the crawler
-        └── 04_syck_report.html
+        ├── 00_targets.txt        ← your input domain(s), or subfinder output
+        ├── 02_live_hosts.txt     ← httpx output (status + title)
+        ├── 02_live_urls.txt      ← clean URL list (input to katana)
+        ├── 03_urls.txt           ← katana crawl output
+        ├── downloaded/           ← JS files pulled by the downloader
+        └── 04_syck_report.text   ← the report (printed to terminal too)
 ```
 
 ---

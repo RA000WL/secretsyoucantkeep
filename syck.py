@@ -572,6 +572,50 @@ def iter_files(root: Path, follow_symlinks: bool = False,
 _RULE_RANK: dict[str, int] = {r.name: SEVERITY_ORDER[r.severity] for r in RULES}
 _MIN_RANK: int = SEVERITY_ORDER["LOW"]
 
+# Pre-compiled regexes used by the high-entropy sweep.  Compiled once
+# at module load instead of on every line of every file.
+_ENTROPY_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+# Only run the entropy sweep on lines that look like they could carry
+# a secret.  Without this filter minified JS, source maps and JSON
+# configs full of base64 blobs produce huge numbers of false-positive
+# "high entropy" findings.  Keywords are case-insensitive.
+_SECRET_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"api[_-]?key|apikey|"
+    r"secret|secret[_-]?key|"
+    r"password|passwd|pwd|"
+    r"token|bearer|"
+    r"auth(?:orization)?|credential|"
+    r"private[_-]?key|access[_-]?key|"
+    r"client[_-]?(?:id|secret)|"
+    r"aws|gcp|azure|s3|"
+    r"encryption[_-]?key|signing[_-]?key|"
+    r"jwt|oauth|"
+    r"ssh[_-]?key"
+    r")\b"
+)
+
+
+def _is_minified_js(path: Path, content: str) -> bool:
+    """Heuristics for minified/bundled JS.  These files contain thousands
+    of long alphanumeric tokens (variable names, base64 data URIs, hash
+    constants) that all look high-entropy — running the entropy sweep
+    on them produces pure noise."""
+    name = path.name.lower()
+    if name.endswith((".min.js", ".bundle.js", ".min.mjs")):
+        return True
+    if not (name.endswith(".js") or name.endswith(".mjs")):
+        return False
+    if len(content) < 5000:
+        return False
+    nlines = content.count("\n")
+    if nlines == 0:
+        return True
+    avg = len(content) / nlines
+    # Minified JS is typically 1-3 huge lines, or has a very high
+    # average line length.
+    return nlines <= 3 or avg > 2000
+
 
 def scan_file(path: Path, min_severity: str = "LOW",
               high_entropy_scan: bool = True) -> list[Finding]:
@@ -580,6 +624,12 @@ def scan_file(path: Path, min_severity: str = "LOW",
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return findings
+
+    # Skip the high-entropy sweep on minified/bundled JS — these files
+    # have thousands of long tokens (variable names, base64 data URIs,
+    # hash constants) that all look high-entropy.  The pattern-based
+    # rules above still run, so real keys won't be missed.
+    entropy_eligible = high_entropy_scan and not _is_minified_js(path, content)
 
     seen: set[tuple[int, str, str]] = set()
     min_rank = SEVERITY_ORDER[min_severity]
@@ -612,9 +662,13 @@ def scan_file(path: Path, min_severity: str = "LOW",
                     entropy=ent,
                 ))
 
-        if high_entropy_scan:
-            for token in re.findall(r"[A-Za-z0-9+/=_\-]{32,}", line):
-                if likely_secret(token, min_len=32, min_entropy=4.0):
+        if entropy_eligible and _SECRET_CONTEXT_RE.search(line):
+            # Only run the entropy sweep on lines that look like they
+            # could carry a secret.  This is the main fix for the
+            # "the whole minified JS file is reported as high entropy"
+            # false positive.
+            for token in _ENTROPY_TOKEN_RE.findall(line):
+                if likely_secret(token, min_len=32, min_entropy=4.5):
                     add(Finding(
                         file=str(path),
                         line=lineno,
@@ -635,6 +689,8 @@ def _collect_files(targets: list[Path], skip_binary: bool,
     files: list[Path] = []
     for target in targets:
         if target.is_file():
+            if _should_skip_file(target):
+                continue
             if skip_binary and not is_text_file(target):
                 continue
             if max_file_size:
@@ -646,12 +702,21 @@ def _collect_files(targets: list[Path], skip_binary: bool,
             files.append(target)
         elif target.is_dir():
             for path in iter_files(target, follow_symlinks, exclude_patterns, max_file_size):
+                if _should_skip_file(path):
+                    continue
                 if skip_binary and not is_text_file(path):
                     continue
                 files.append(path)
         else:
             print(color(f"[WARN] skipping unknown path: {target}", YELLOW), file=sys.stderr)
     return files
+
+
+_SKIP_SUFFIXES = (".map",)  # source maps, full of base64 noise
+
+
+def _should_skip_file(path: Path) -> bool:
+    return path.suffix.lower() in _SKIP_SUFFIXES
 
 
 def scan_paths(
