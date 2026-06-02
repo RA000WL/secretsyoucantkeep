@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-secretsyoucantkeep.py — local secrets scanner for bug bounty hunters.
+syck.py — local secrets scanner for bug bounty hunters.
 Scans files and folders for exposed credentials, tokens, and keys.
 
 By default secrets are printed IN FULL so you can paste them straight into
@@ -805,9 +805,9 @@ def format_sarif(findings: list[Finding], redact_secrets: bool = False) -> str:
         "runs": [{
             "tool": {
                 "driver": {
-                    "name": "secretsyoucantkeep",
+                    "name": "syck",
                     "version": "2.0.0",
-                    "informationUri": "https://github.com/local/secretsyoucantkeep",
+                    "informationUri": "https://github.com/RA000WL/secretsyoucantkeep",
                     "rules": rules_list,
                 },
             },
@@ -823,7 +823,7 @@ def _md_escape(value: str) -> str:
 
 def format_markdown(findings: list[Finding], redact_secrets: bool = False) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines: list[str] = [f"# secretsyoucantkeep scan report", f"_Generated: {ts}_", ""]
+    lines: list[str] = [f"# syck scan report", f"_Generated: {ts}_", ""]
 
     if not findings:
         lines.append("**No secrets found.**")
@@ -882,7 +882,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>secretsyoucantkeep report</title>
+<title>syck report</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           margin: 24px; background: #0d1117; color: #c9d1d9; }}
@@ -915,8 +915,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>secretsyoucantkeep report</h1>
-<p class="meta">Generated: {timestamp} &middot; Tool: secretsyoucantkeep v2.0.0</p>
+<h1>syck report</h1>
+<p class="meta">Generated: {timestamp} &middot; Tool: syck v2.0.0</p>
 {warning}
 {body}
 </body>
@@ -996,7 +996,7 @@ FORMATTERS = {
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="secretsyoucantkeep",
+        prog="syck",
         description=(
             "Scan files/folders for exposed secrets (bug bounty edition).\n"
             "\n"

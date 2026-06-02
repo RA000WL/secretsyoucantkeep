@@ -5,11 +5,15 @@
 > bundles, repos, and recon output. Prints secrets **in full** so you
 > can paste them straight into a report.
 
+The repo is called `secretsyoucantkeep` (yes, with that name — the GitHub
+repo URL is `github.com/RA000WL/secretsyoucantkeep`), but the scanner
+binary is just `syck.py` and is invoked as `syck` for short.
+
 Part of a two-script toolkit:
 
 | Script | Short | Role |
 |---|---|---|
-| `secretsyoucantkeep.py` | `syck` | The scanner — pattern-matches 100+ secret formats across files & dirs |
+| `syck.py`              | `syck` | The scanner — pattern-matches 100+ secret formats across files & dirs |
 | `syck-hunt.py`         | `syck-hunt` | Recon pipeline — wires `subfinder → httpx → katana → syck` into one command |
 
 ---
@@ -56,7 +60,7 @@ on the side of caution; bump them up only when you have written permission.
 
 ```bash
 # 1. Scan a local repo / folder
-python secretsyoucantkeep.py /path/to/repo
+python syck.py /path/to/repo
 
 # 2. Full recon → secrets pipeline
 python syck-hunt.py example.com
@@ -84,7 +88,7 @@ stage manually or feed intermediate files into other tools.
 
 ## Features
 
-### Scanner (`secretsyoucantkeep.py` / `syck`)
+### Scanner (`syck.py` / `syck`)
 
 - **100+ detection rules** across cloud, source control, messaging,
   payments, AI providers, SaaS, infra, crypto, and databases
@@ -128,7 +132,7 @@ Or grab pre-built binaries from each tool's GitHub releases page.
 ```bash
 git clone https://github.com/RA000WL/secretsyoucantkeep.git
 cd secretsyoucantkeep/Script
-chmod +x secretsyoucantkeep.py syck-hunt.py   # Unix only
+chmod +x syck.py syck-hunt.py   # Unix only
 ```
 
 ### Shell aliases (optional)
@@ -136,7 +140,7 @@ chmod +x secretsyoucantkeep.py syck-hunt.py   # Unix only
 Add to `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-alias syck='python /path/to/secretsyoucantkeep.py'
+alias syck='python /path/to/syck.py'
 syck-hunt() { python /path/to/syck-hunt.py "$@"; }
 ```
 
@@ -291,7 +295,7 @@ syck . --severity CRITICAL || { echo "CRITICAL secrets found"; exit 1; }
 
 ## Extending — adding a new rule
 
-Open `secretsyoucantkeep.py`, find the `RULES` list, and append a `Rule`:
+Open `syck.py`, find the `RULES` list, and append a `Rule`:
 
 ```python
 Rule("my_provider_api_key",
@@ -313,9 +317,9 @@ Test with the dummy file (`dummy_secrets.env`) or `syck --list-rules`.
 ## Scripts in this repo
 
 ```
-secretsyoucantkeep.py     # the scanner (syck)
-syck-hunt.py              # the recon pipeline (syck-hunt)
-dummy_secrets.env         # test fixture with 100+ dummy secrets
+syck.py              # the scanner (syck)
+syck-hunt.py         # the recon pipeline (syck-hunt)
+dummy_secrets.env    # test fixture with 100+ dummy secrets
 ```
 
 ---

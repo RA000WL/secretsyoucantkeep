@@ -115,7 +115,7 @@ TOOL_URLS = {
     "subfinder": "https://github.com/projectdiscovery/subfinder/releases",
     "httpx":     "https://github.com/projectdiscovery/httpx/releases",
     "katana":    "https://github.com/projectdiscovery/katana/releases",
-    "syck":      "this repo (secretsyoucantkeep.py, see the README)",
+    "syck":      "this repo (syck.py, see the README)",
 }
 
 
