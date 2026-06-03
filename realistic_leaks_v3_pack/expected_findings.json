@@ -1,0 +1,34 @@
+[
+  {
+    "file": "frontend/dist/main.bundle.js",
+    "expected_secret": true
+  },
+  {
+    "file": "frontend/dist/vendors.bundle.js",
+    "expected_secret": true
+  },
+  {
+    "file": "react-app/src/services/api.ts",
+    "expected_secret": true
+  },
+  {
+    "file": "vue-app/src/store/index.js",
+    "expected_secret": true
+  },
+  {
+    "file": "backend/python/app.py",
+    "expected_secret": true
+  },
+  {
+    "file": "infra/terraform/prod.tf",
+    "expected_secret": true
+  },
+  {
+    "file": "ci/github/workflows/deploy.yml",
+    "expected_secret": true
+  },
+  {
+    "file": "obfuscated/mixed.js",
+    "expected_secret": true
+  }
+]

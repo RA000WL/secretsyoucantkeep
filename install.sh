@@ -16,6 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYCK_PY="$SCRIPT_DIR/syck.py"
 SYCK_HUNT_PY="$SCRIPT_DIR/syck-hunt.py"
+SYCK_VALIDATE_PY="$SCRIPT_DIR/syck_validate.py"
 
 if [[ ! -f "$SYCK_PY" || ! -f "$SYCK_HUNT_PY" ]]; then
     echo "error: run this from the repo root (could not find syck.py / syck-hunt.py)" >&2
@@ -71,6 +72,7 @@ else
     "workers": 10,
     "max-file-size": "5M",
     "decode-base64": true,
+    "decode-hex": true,
     "progress": true,
     "redact": false,
     "no-color": false
@@ -90,11 +92,17 @@ EOF
     chmod +x "$target"
 }
 
-write_shim "$PREFIX/syck"      "$SYCK_PY"
-write_shim "$PREFIX/syck-hunt" "$SYCK_HUNT_PY"
+write_shim "$PREFIX/syck"         "$SYCK_PY"
+write_shim "$PREFIX/syck-hunt"    "$SYCK_HUNT_PY"
+if [[ -f "$SYCK_VALIDATE_PY" ]]; then
+    write_shim "$PREFIX/syck-validate" "$SYCK_VALIDATE_PY"
+fi
 echo "[+] shims:"
 echo "    $PREFIX/syck"
 echo "    $PREFIX/syck-hunt"
+if [[ -f "$PREFIX/syck-validate" ]]; then
+    echo "    $PREFIX/syck-validate"
+fi
 
 # ── update shell rc files ───────────────────────────────────────
 # We patch THREE files so the PATH change is visible from every shell

@@ -1,0 +1,34 @@
+[
+  {
+    "file": "apps/web/dist/main.8f3a2.bundle.js",
+    "difficulty": "high"
+  },
+  {
+    "file": "apps/admin/dist/vendor.js",
+    "difficulty": "high"
+  },
+  {
+    "file": "packages/shared/auth.js",
+    "difficulty": "high"
+  },
+  {
+    "file": "packages/shared/hex.js",
+    "difficulty": "high"
+  },
+  {
+    "file": "infra/prod.tf",
+    "difficulty": "high"
+  },
+  {
+    "file": "ci/github/workflows/release.yml",
+    "difficulty": "high"
+  },
+  {
+    "file": "services/python/app.py",
+    "difficulty": "high"
+  },
+  {
+    "file": "services/go/config.go",
+    "difficulty": "high"
+  }
+]

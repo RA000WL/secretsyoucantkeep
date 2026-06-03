@@ -541,6 +541,7 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
                redact: bool = False, workers: int = 4,
                max_file_size: str = "5M",
                decode_base64: bool = True,
+               decode_hex: bool = False,
                syck_cmd: list[str] | None = None,
                dry_run: bool = False) -> Path | None:
     """Stage 5: scan downloaded files with syck.
@@ -571,6 +572,8 @@ def stage_syck(targets: Iterable[Path], out_dir: Path,
         args.append("--redact")
     if not decode_base64:
         args.append("--no-decode-base64")
+    if decode_hex:
+        args.append("--decode-hex")
     if dry_run:
         print(color(f"DRY: {' '.join(str(a) for a in args)}", GREY))
         return out
@@ -713,6 +716,129 @@ def stage_extract_source_maps(
 
 
 # ──────────────────────────────────────────────
+# Wayback Machine / GAU integration
+# ──────────────────────────────────────────────
+
+def stage_gau(domains: list[str], out_dir: Path,
+              rate_limit: float = 5.0,
+              dry_run: bool = False) -> Path | None:
+    """Pull URLs from Wayback Machine / GAU."""
+    out = out_dir / "03_wayback_urls.txt"
+    gau_path = which("gau")
+    wayback_path = which("wayback")
+
+    if not gau_path and not wayback_path:
+        print(color("[!] 'gau' or 'wayback' required for --wayback mode", RED))
+        print(color("    Install:  go install github.com/lc/gau/v2/cmd/gau@latest", YELL))
+        print(color("    Or:       go install github.com/tomnomnom/waybackurls@latest", YELL))
+        return None
+
+    if gau_path:
+        print(color(f"[*] fetching Wayback URLs with gau for {len(domains)} domain(s)", CYAN))
+        args = ["gau", "--o", str(out), "--threads", "10"]
+        if rate_limit > 0:
+            args += ["--rate-limit", str(int(rate_limit))]
+        args.extend(domains)
+    else:
+        print(color(f"[*] fetching Wayback URLs with waybackurls for {len(domains)} domain(s)", CYAN))
+        dlist = out_dir / "wayback_domains.txt"
+        if not dry_run:
+            dlist.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        args = ["bash", "-c", f"cat {dlist} | waybackurls > {out}"]
+
+    rc = run_cmd(args, dry_run)
+    if dry_run:
+        return out
+    if rc != 0 or not out.exists() or out.stat().st_size == 0:
+        print(color("[!] gau/wayback produced no output", YELL))
+        return None
+    n = sum(1 for _ in out.open(encoding="utf-8", errors="replace"))
+    print(color(f"[+] {n} Wayback URL(s)", GREEN))
+    return out
+
+
+# ──────────────────────────────────────────────
+# Scope filtering
+# ──────────────────────────────────────────────
+
+def filter_scope(url_list: Path, pattern: str,
+                 dry_run: bool = False) -> Path | None:
+    """Filter URLs by a regex scope pattern."""
+    compiled = re.compile(pattern)
+    out = url_list.with_suffix(".scope.txt") if not dry_run else url_list
+    if dry_run:
+        return out
+    total = 0
+    kept = 0
+    with out.open("w", encoding="utf-8") as dst:
+        for line in url_list.open(encoding="utf-8", errors="replace"):
+            total += 1
+            if compiled.search(line.strip()):
+                dst.write(line)
+                kept += 1
+    print(color(f"[*] scope filter: {kept}/{total} URL(s) match '{pattern}'", CYAN))
+    if kept == 0:
+        print(color("[!] scope filter eliminated all URLs", YELL))
+        return None
+    return out
+
+
+# ──────────────────────────────────────────────
+# Checkpoint / resume helpers
+# ──────────────────────────────────────────────
+
+CHECKPOINT_FILE = "resume.json"
+
+
+def save_checkpoint(out_dir: Path, stage: str) -> None:
+    """Write a checkpoint file noting the last completed stage."""
+    cp = out_dir / CHECKPOINT_FILE
+    cp.write_text(json.dumps({"stage": stage}, indent=2), encoding="utf-8")
+
+
+def load_checkpoint(out_dir: Path) -> str | None:
+    """Read the last completed stage from checkpoint. Returns None if no checkpoint."""
+    cp = out_dir / CHECKPOINT_FILE
+    if not cp.exists():
+        return None
+    try:
+        data = json.loads(cp.read_text(encoding="utf-8"))
+        return data.get("stage")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def resume_from(stage: str, out_dir: Path,
+                domains: list[str], args) -> str | None:
+    """Determine which stage to resume from based on existing output files.
+
+    Checks for each stage's output file. Returns the stage name (e.g. 'subfinder')
+    to resume FROM (the next uncompleted stage), or None if everything is done.
+    """
+    stages = [
+        ("subfinder", "01_subdomains.txt"),
+        ("httpx",     "02_live_urls.txt"),
+        ("wayback",   "03_wayback_urls.txt"),
+        ("katana",    "03_urls.txt"),
+        ("download",  "_downloaded_js"),
+    ]
+    last = stage
+    for name, marker in stages:
+        target = out_dir / marker
+        if name == "download":
+            if target.is_dir() and any(target.iterdir()):
+                last = name
+                continue
+        elif target.exists() and target.stat().st_size > 0:
+            last = name
+            continue
+        # Found first missing stage — resume from this point
+        print(color(f"[*] resuming from stage '{name}' (previous checkpoint: '{stage}')", CYAN))
+        return name
+    return None
+
+
+# ──────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────
 
@@ -847,6 +973,18 @@ examples:
                       help="Print commands without executing them")
     misc.add_argument("-nc", "--no-color", action="store_true",
                       help="Disable coloured output")
+    misc.add_argument("--wayback", action="store_true",
+                      help="Use Wayback Machine URLs (via gau/waybackurls) "
+                           "instead of katana crawling")
+    misc.add_argument("--scope", metavar="REGEX",
+                      help="Filter discovered URLs by regex scope "
+                           "(e.g. 'example\\.com|api\\.example\\.com'). "
+                           "Applies after URL discovery, before download.")
+    misc.add_argument("--resume", action="store_true",
+                      help="Resume from last checkpoint. Skips completed "
+                           "stages automatically.")
+    misc.add_argument("--decode-hex", action="store_true",
+                      help="Decode hex-encoded strings and rescan for secrets")
     return ap
 
 
@@ -917,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
             workers=args.syck_workers,
             max_file_size=args.max_file_size,
             decode_base64=args.decode_base64,
+            decode_hex=args.decode_hex,
             syck_cmd=syck_cmd,
             dry_run=args.dry_run,
         )
@@ -933,37 +1072,106 @@ def main(argv: list[str] | None = None) -> int:
         print(color("[*] rate limit: unlimited", CYAN))
 
     # Mode 2: full recon → download → syck
+
+    # Checkpoint resume
+    force_stage: str | None = None
+    if args.resume:
+        stage = load_checkpoint(out_dir)
+        if stage:
+            print(color(f"[*] found checkpoint: last completed stage '{stage}'", CYAN))
+            force_stage = resume_from(stage, out_dir, domains, args)
+            if force_stage is None:
+                print(color("[*] all stages already complete, re-running syck", CYAN))
+                force_stage = "syck"
+        else:
+            print(color("[*] no checkpoint found, starting from scratch", CYAN))
+            save_checkpoint(out_dir, "start")
+
     if args.enum_subs:
-        print(color(f"[*] -es: enumerating subdomains for {len(domains)} "
-                    f"target domain(s) with subfinder", CYAN))
-        subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
+        if force_stage and force_stage != "subfinder":
+            print(color(f"[*] skipping subfinder (resuming from '{force_stage}')", CYAN))
+            subs = out_dir / "01_subdomains.txt"
+        else:
+            print(color(f"[*] -es: enumerating subdomains for {len(domains)} "
+                        f"target domain(s) with subfinder", CYAN))
+            subs = stage_subfinder(domains, out_dir, dry_run=args.dry_run)
+            if subs:
+                save_checkpoint(out_dir, "subfinder")
     else:
         # Default: skip subdomain enumeration.  Write the input domains
         # straight to a file in subfinder's slot — stage_httpx doesn't
         # care where the host list came from.
-        subs = out_dir / "00_targets.txt"
-        if not args.dry_run:
-            subs.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        if force_stage and force_stage not in ("subfinder", "httpx"):
+            subs = out_dir / "01_subdomains.txt" if (out_dir / "01_subdomains.txt").exists() else out_dir / "00_targets.txt"
+        else:
+            subs = out_dir / "00_targets.txt"
+            if not args.dry_run:
+                subs.write_text("\n".join(domains) + "\n", encoding="utf-8")
+                save_checkpoint(out_dir, "subfinder")
     if not subs and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
-    hosts = stage_httpx(subs, out_dir,
-                        rate_limit=args.rate_limit,
-                        dry_run=args.dry_run)
+    # httpx stage
+    if force_stage and force_stage not in ("subfinder", "httpx"):
+        hosts = out_dir / "02_live_urls.txt"
+        if not hosts.exists() or hosts.stat().st_size == 0:
+            hosts = subs if subs.exists() else None
+    else:
+        hosts = stage_httpx(subs, out_dir,
+                            rate_limit=args.rate_limit,
+                            dry_run=args.dry_run)
+        if hosts:
+            save_checkpoint(out_dir, "httpx")
     if not hosts and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
 
-    if args.no_katana:
+    if args.no_katana and not args.wayback:
         return _summarise(out_dir, None, args.dry_run)
 
-    urls = stage_katana(hosts, out_dir,
-                        depth=args.depth,
-                        rate_limit=args.rate_limit,
-                        concurrency=args.katana_conc,
-                        headless=args.headless,
-                        dry_run=args.dry_run)
-    if not urls and not args.dry_run:
-        return _summarise(out_dir, None, args.dry_run)
+    # Wayback mode (uses gau/waybackurls instead of katana)
+    if args.wayback:
+        if force_stage and force_stage not in ("subfinder", "httpx", "wayback"):
+            urls = out_dir / "03_wayback_urls.txt"
+            if not urls.exists() or urls.stat().st_size == 0:
+                print(color("[!] Wayback URLs missing, re-fetching", YELL))
+                urls = stage_gau(domains, out_dir, rate_limit=args.rate_limit, dry_run=args.dry_run)
+        else:
+            urls = stage_gau(domains, out_dir, rate_limit=args.rate_limit, dry_run=args.dry_run)
+            if urls:
+                save_checkpoint(out_dir, "wayback")
+        if not urls and not args.dry_run:
+            return _summarise(out_dir, None, args.dry_run)
+    else:
+        if force_stage and force_stage not in ("subfinder", "httpx", "wayback", "katana"):
+            urls = out_dir / "03_urls.txt"
+            if not urls.exists() or urls.stat().st_size == 0:
+                print(color("[!] crawled URLs missing, re-crawling", YELL))
+                urls = stage_katana(hosts, out_dir,
+                                    depth=args.depth,
+                                    rate_limit=args.rate_limit,
+                                    concurrency=args.katana_conc,
+                                    headless=args.headless,
+                                    dry_run=args.dry_run)
+        else:
+            urls = stage_katana(hosts, out_dir,
+                                depth=args.depth,
+                                rate_limit=args.rate_limit,
+                                concurrency=args.katana_conc,
+                                headless=args.headless,
+                                dry_run=args.dry_run)
+            if urls:
+                save_checkpoint(out_dir, "katana")
+        if not urls and not args.dry_run:
+            return _summarise(out_dir, None, args.dry_run)
+
+    # Scope filtering: filter discovered URLs before download
+    if args.scope and urls:
+        scoped = filter_scope(urls, args.scope, dry_run=args.dry_run)
+        if scoped and scoped.exists() and scoped.stat().st_size > 0:
+            urls = scoped
+        elif not args.dry_run:
+            print(color("[!] scope filter removed all URLs, aborting", RED))
+            return _summarise(out_dir, None, args.dry_run)
 
     if args.no_download:
         print(color("\n[✓] recon complete (download skipped)", GREEN))
@@ -983,6 +1191,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not files and not args.dry_run:
         return _summarise(out_dir, None, args.dry_run)
+    if files:
+        save_checkpoint(out_dir, "download")
 
     # Optional: extract sources from source maps
     sources: Path | None = None
@@ -1017,9 +1227,11 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.syck_workers,
         max_file_size=args.max_file_size,
         decode_base64=args.decode_base64,
+        decode_hex=args.decode_hex,
         syck_cmd=syck_cmd,
         dry_run=args.dry_run,
     )
+    save_checkpoint(out_dir, "syck")
     return _summarise(out_dir, report, args.dry_run)
 
 

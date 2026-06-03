@@ -1,0 +1,2 @@
+
+OPENAI_KEY="sk-svcacct-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12"

@@ -1,0 +1,2 @@
+environment:
+  DATABASE_URL: postgres://admin:Secret123@db:5432/app

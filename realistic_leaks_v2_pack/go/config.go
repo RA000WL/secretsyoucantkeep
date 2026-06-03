@@ -1,0 +1,2 @@
+
+var ApiKey="pplx-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890ABCDEFGHIJK"

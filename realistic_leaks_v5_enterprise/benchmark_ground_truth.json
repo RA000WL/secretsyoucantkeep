@@ -1,0 +1,47 @@
+[
+  {
+    "file": "apps/web/dist/main.a1b2c3.js",
+    "category": "secret",
+    "difficulty": "extreme"
+  },
+  {
+    "file": "apps/admin/dist/vendor.js",
+    "category": "secret",
+    "difficulty": "medium"
+  },
+  {
+    "file": "packages/auth/base64.js",
+    "category": "secret",
+    "difficulty": "high"
+  },
+  {
+    "file": "packages/auth/hex.js",
+    "category": "secret",
+    "difficulty": "medium"
+  },
+  {
+    "file": "infra/terraform/prod.tf",
+    "category": "secret",
+    "difficulty": "high"
+  },
+  {
+    "file": "ci/workflows/release.yml",
+    "category": "secret",
+    "difficulty": "high"
+  },
+  {
+    "file": "services/python/settings.py",
+    "category": "secret",
+    "difficulty": "high"
+  },
+  {
+    "file": "services/go/config.go",
+    "category": "secret",
+    "difficulty": "medium"
+  },
+  {
+    "file": "sourcemaps/app.js.map",
+    "category": "secret",
+    "difficulty": "high"
+  }
+]

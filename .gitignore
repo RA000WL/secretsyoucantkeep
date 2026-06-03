@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*:Zone.Identifier
+recon/
+__pycache__/
+*.pyc

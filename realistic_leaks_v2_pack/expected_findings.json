@@ -1,0 +1,70 @@
+[
+  {
+    "file": "webpack/runtime.bundle.js",
+    "contains_secret": true
+  },
+  {
+    "file": "webpack/vendors.bundle.js",
+    "contains_secret": true
+  },
+  {
+    "file": "react/src/config.ts",
+    "contains_secret": true
+  },
+  {
+    "file": "react/build/static/js/main.abcd1234.js",
+    "contains_secret": true
+  },
+  {
+    "file": "vue/src/services/api.js",
+    "contains_secret": true
+  },
+  {
+    "file": "nextjs/.next/static/chunks/app.js",
+    "contains_secret": true
+  },
+  {
+    "file": "configs/app.json",
+    "contains_secret": true
+  },
+  {
+    "file": "configs/firebase.json",
+    "contains_secret": true
+  },
+  {
+    "file": "ci/github-actions.yml",
+    "contains_secret": true
+  },
+  {
+    "file": "terraform/prod.tf",
+    "contains_secret": true
+  },
+  {
+    "file": "docker/docker-compose.yml",
+    "contains_secret": true
+  },
+  {
+    "file": "k8s/secret.yaml",
+    "contains_secret": true
+  },
+  {
+    "file": "obfuscated/base64.js",
+    "contains_secret": true
+  },
+  {
+    "file": "obfuscated/hex.js",
+    "contains_secret": true
+  },
+  {
+    "file": "sourcemaps/app.js.map",
+    "contains_secret": true
+  },
+  {
+    "file": "python/app.py",
+    "contains_secret": true
+  },
+  {
+    "file": "go/config.go",
+    "contains_secret": true
+  }
+]

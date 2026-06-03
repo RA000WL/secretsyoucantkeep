@@ -138,6 +138,17 @@ RULES: list[Rule] = [
          "HIGH",
          re.compile(r"\bglptt-[A-Za-z0-9\-_]{20}\b")),
 
+    # ── Atlassian ────────────────────────────
+    Rule("jira_api_token",
+         "CRITICAL",
+         re.compile(r"\bATATT[A-Za-z0-9_\-]{30,}\b")),
+    Rule("bitbucket_app_password",
+         "CRITICAL",
+         re.compile(r"\bATBB[A-Za-z0-9_\-]{10,}\b")),
+    Rule("bitbucket_app_password_context",
+         "CRITICAL",
+         re.compile(r"(?i)\bbitbucket[_\-]?(?:app[_\-]?)?password\s*[:=]\s*['\"]?[^\s'\",]{20,}['\"]?")),
+
     # ── Slack ─────────────────────────────────
     Rule("slack_token",
          "HIGH",
@@ -189,6 +200,11 @@ RULES: list[Rule] = [
     Rule("npm_token",
          "HIGH",
          re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+
+    # ── API / Dev Tools ─────────────────────
+    Rule("postman_api_key",
+         "HIGH",
+         re.compile(r"\bPMAK-[A-Za-z0-9_\-=+/]{40,}\b")),
 
     # ── Telegram ─────────────────────────────
     Rule("telegram_bot_token",
@@ -255,6 +271,18 @@ RULES: list[Rule] = [
     Rule("supabase_url",
          "LOW",
          re.compile(r"https://[a-z0-9]{20,}\.supabase\.co")),
+    Rule("supabase_key",
+         "HIGH",
+         re.compile(r"(?i)(?:supabase|sb)[_\-]?(?:anon|service|key|secret|role)\s*[:=]\s*['\"]?eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\.?[A-Za-z0-9\-_=+/]*['\"]?")),
+    Rule("supabase_service_token",
+         "HIGH",
+         re.compile(r"\bsbp_[A-Za-z0-9]{30,}\b")),
+    Rule("airtable_api_key",
+         "CRITICAL",
+         re.compile(r"\bkey(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{14}\b")),
+    Rule("airtable_pat",
+         "CRITICAL",
+         re.compile(r"\bpat[A-Za-z0-9]{13,}\.[A-Za-z0-9]{30,}\b")),
     Rule("planetscale_password",
          "CRITICAL",
          re.compile(r"\bpscale_pw_[A-Za-z0-9_\-]{40,}\b")),
@@ -293,6 +321,15 @@ RULES: list[Rule] = [
     Rule("sentry_dsn",
          "MEDIUM",
          re.compile(r"https://[a-f0-9]{32}@[a-z0-9.]+\.sentry\.io/\d+")),
+    Rule("sentry_auth_token",
+         "HIGH",
+         re.compile(r"\bsntrys_[A-Za-z0-9_\-]{40,}\b")),
+    Rule("sentry_user_token",
+         "HIGH",
+         re.compile(r"\bsntryu_[A-Za-z0-9]{50,}\b")),
+    Rule("intercom_access_token",
+         "CRITICAL",
+         re.compile(r"\bdG9rO[A-Za-z0-9+/=]{20,}\b")),
     Rule("pulumi_token",
          "CRITICAL",
          re.compile(r"\bpul-[A-Za-z0-9]{40,}\b")),
@@ -432,7 +469,7 @@ RULES: list[Rule] = [
          re.compile(r"\bglsa_[A-Za-z0-9]{20,}_[A-F0-9]{8}\b")),
     Rule("pagerduty_api_token",
          "HIGH",
-         re.compile(r"\bu\+[A-Za-z0-9_\-]{20,}\b")),
+         re.compile(r"(?<![A-Za-z0-9/+])\bu\+[A-Za-z0-9_\-]{20,}\b")),
     Rule("sonarqube_token",
          "HIGH",
          re.compile(r"\bsqu_[A-Za-z0-9]{30,}\b")),
@@ -492,6 +529,50 @@ RULES: list[Rule] = [
          "HIGH",
          re.compile(r"\bAAAA[A-Za-z0-9_\-]{50,}\b")),
 
+    # ── Atlassian / Jira ──────────────────────
+    Rule("jira_atlassian_token",
+         "CRITICAL",
+         re.compile(r"\bATATT3xFfGF0[A-Za-z0-9_\-]{40,}\b")),
+
+    # ── LaunchDarkly ──────────────────────────
+    Rule("launchdarkly_sdk_key",
+         "HIGH",
+         re.compile(r"\bsdk-[A-Za-z0-9_\-]{40,}\b")),
+    Rule("launchdarkly_mobile_key",
+         "HIGH",
+         re.compile(r"\bmob-[A-Za-z0-9_\-]{40,}\b")),
+
+    # ── Elastic Cloud ─────────────────────────
+    Rule("elastic_cloud_api_key",
+         "CRITICAL",
+         re.compile(r"\bApiKey\s+[A-Za-z0-9+/=]{40,}\b")),
+
+    # ── Mixpanel ──────────────────────────────
+    Rule("mixpanel_token",
+         "MEDIUM",
+         re.compile(r"(?i)mixpanel[_\-]?(?:token|secret)\s*[:=]\s*['\"]?[A-Za-z0-9]{32}['\"]?")),
+
+    # ── Segment ───────────────────────────────
+    Rule("segment_write_key",
+         "HIGH",
+         re.compile(r"(?i)segment[_\-]?(?:write[_\-]?)?key\s*[:=]\s*['\"]?[A-Za-z0-9]{40,}['\"]?")),
+
+    # ── CI/CD secrets ─────────────────────────
+    Rule("github_actions_secret_ref",
+         "LOW",
+         re.compile(r'\$\{\{\s*secrets\.([A-Z_]{4,})\s*\}\}')),
+    Rule("ci_inline_env_secret",
+         "HIGH",
+         re.compile(r'(?im)^\s+[A-Z_]{3,}(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)\s*:\s*(?!"\$).{8,}')),
+
+    # ── SPA embedded config ───────────────────
+    Rule("nextjs_data_block",
+         "MEDIUM",
+         re.compile(r'<script id="__NEXT_DATA__"[^>]*>(\{.{20,}?\})</script>', re.DOTALL)),
+    Rule("window_initial_state",
+         "MEDIUM",
+         re.compile(r'window\.__(?:INITIAL_STATE|APP_STATE|CONFIG|ENV)__\s*=\s*(\{.+?\});', re.DOTALL)),
+
     # ── Generic patterns ─────────────────────
     Rule("bearer_token",
          "HIGH",
@@ -507,23 +588,25 @@ RULES: list[Rule] = [
          re.compile(r"^(?!#)[A-Z_]+(?:SECRET|KEY|TOKEN|PASSWORD|PASS|PWD|AUTH)\s*=\s*.{8,}", re.MULTILINE)),
 ]
 
-SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 SEVERITY_COLOR = {
     "CRITICAL": RED + BOLD,
     "HIGH":     YELLOW + BOLD,
     "MEDIUM":   CYAN,
     "LOW":      GREY,
+    "INFO":     GREEN,
 }
 SEVERITY_SARIF_LEVEL = {
     "CRITICAL": "error",
     "HIGH":     "error",
     "MEDIUM":   "warning",
     "LOW":      "note",
+    "INFO":     "none",
 }
 
 SKIP_DIRS = {
     ".git", ".hg", ".svn", ".tox", ".mypy_cache", ".pytest_cache",
-    "node_modules", "venv", ".venv", "__pycache__", "dist", "build",
+    "node_modules", "venv", ".venv", "__pycache__", "build",
     ".eggs", "target", "vendor",
 }
 
@@ -542,6 +625,7 @@ TEXT_EXTENSIONS = {
     ".gradle", ".mvn",
     ".npmrc", ".yarnrc", ".dockerignore",
     "Dockerfile", ".dockerfile",
+    ".map",
 }
 
 DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
@@ -589,6 +673,8 @@ def likely_secret(value: str, min_len: int = 20, min_entropy: float = 3.5) -> bo
 
 def is_text_file(path: Path) -> bool:
     if path.suffix.lower() in TEXT_EXTENSIONS or path.name in TEXT_EXTENSIONS:
+        return True
+    if path.name.startswith(".env."):
         return True
     try:
         with path.open("rb") as fh:
@@ -780,7 +866,6 @@ def _decode_and_rescan(line: str, path: Path, lineno: int,
     decoded plaintext.  Findings are tagged ``base64_<rulename>``."""
     for match in _BASE64_CANDIDATE_RE.finditer(line):
         raw = match.group(0)
-        # Quick sanity: base64 length must be valid
         if len(raw) < _BASE64_MIN_LEN:
             continue
         try:
@@ -791,7 +876,6 @@ def _decode_and_rescan(line: str, path: Path, lineno: int,
             decoded_text = decoded_bytes.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        # Skip if the decoded output is binary or entirely non-printable
         printable = sum(1 for ch in decoded_text if ch.isprintable() or ch in "\n\r\t")
         if printable < len(decoded_text) // 2:
             continue
@@ -808,6 +892,59 @@ def _decode_and_rescan(line: str, path: Path, lineno: int,
                     severity=rule.severity,
                     secret=secret,
                     context=f"base64 decoded: {decoded_text[:200]}",
+                    entropy=shannon_entropy(secret),
+                ))
+
+
+# ──────────────────────────────────────────────
+# Hex-decoding pipeline
+# ──────────────────────────────────────────────
+
+_HEX_CANDIDATE_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}){10,}\b")
+_HEX_MIN_BYTES = 10
+
+
+def _decode_hex_and_rescan(line: str, path: Path, lineno: int,
+                           rules: list[Rule], min_rank: int,
+                           add_fn) -> None:
+    """Find hex-encoded strings in *line*, decode them, and re-run rules.
+    Findings are tagged ``hex_<rulename>``."""
+    for match in _HEX_CANDIDATE_RE.finditer(line):
+        raw = match.group(0)
+        if len(raw) < _HEX_MIN_BYTES * 2:
+            continue
+        # Skip if mixed-case — likely not encoded text
+        has_upper = any(ch.isupper() for ch in raw)
+        has_lower = any(ch.islower() for ch in raw)
+        if has_upper and has_lower:
+            continue
+        try:
+            decoded_bytes = bytes.fromhex(raw)
+        except Exception:
+            continue
+        try:
+            decoded_text = decoded_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        printable = sum(1 for ch in decoded_text if ch.isprintable() or ch in "\n\r\t")
+        if printable < len(decoded_text) // 2:
+            continue
+        # Skip if decoded text is just hex chars repeated (noise)
+        if decoded_text.strip().lower().strip("x") in ("", "hex"):
+            continue
+
+        for rule in rules:
+            if _RULE_RANK.get(rule.name, 99) > min_rank:
+                continue
+            for m in rule.pattern.finditer(decoded_text):
+                secret = m.group(0)
+                add_fn(Finding(
+                    file=str(path),
+                    line=lineno,
+                    rule=f"hex_{rule.name}",
+                    severity=rule.severity,
+                    secret=secret,
+                    context=f"hex decoded: {decoded_text[:200]}",
                     entropy=shannon_entropy(secret),
                 ))
 
@@ -892,7 +1029,9 @@ def _scan_json_file(path: Path, content: str, rules: list[Rule],
 
 def scan_file(path: Path, min_severity: str = "LOW",
               high_entropy_scan: bool = True,
-              decode_base64: bool = False) -> list[Finding]:
+              decode_base64: bool = False,
+              decode_hex: bool = False,
+              extract_endpoints_flag: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -921,7 +1060,7 @@ def scan_file(path: Path, min_severity: str = "LOW",
                 continue
             for match in rule.pattern.finditer(line):
                 raw = match.group(0)
-                if rule.name in ("generic_secret", "dotenv_secret", "basic_auth_header", "wakatime_api_key"):
+                if rule.name in ("generic_secret", "dotenv_secret", "basic_auth_header", "wakatime_api_key", "airtable_api_key"):
                     candidate = raw.split("=", 1)[-1].split(":", 1)[-1].strip().strip("'\"")
                     if not likely_secret(candidate, min_len=12, min_entropy=3.2):
                         continue
@@ -959,8 +1098,16 @@ def scan_file(path: Path, min_severity: str = "LOW",
         if decode_base64:
             _decode_and_rescan(line, path, lineno, RULES, min_rank, add)
 
+        # Hex decode + re-scan (opt-in)
+        if decode_hex:
+            _decode_hex_and_rescan(line, path, lineno, RULES, min_rank, add)
+
     # JSON-aware scanning (automatic for .json files)
     _scan_json_file(path, content, RULES, min_rank, add)
+
+    # Endpoint extraction (opt-in)
+    if extract_endpoints_flag:
+        findings.extend(extract_endpoints(path, content))
 
     return findings
 
@@ -995,7 +1142,7 @@ def _collect_files(targets: list[Path], skip_binary: bool,
     return files
 
 
-_SKIP_SUFFIXES = (".map",)  # source maps, full of base64 noise
+_SKIP_SUFFIXES: tuple[str, ...] = ()
 
 
 def _should_skip_file(path: Path) -> bool:
@@ -1050,10 +1197,12 @@ def scan_paths(
     min_severity: str = "LOW",
     high_entropy_scan: bool = True,
     decode_base64: bool = False,
+    decode_hex: bool = False,
     exclude_patterns: list[re.Pattern[str]] | None = None,
     workers: int = DEFAULT_WORKERS,
     max_file_size: int = DEFAULT_MAX_FILE_SIZE,
     progress: bool = False,
+    extract_endpoints_flag: bool = False,
 ) -> list[Finding]:
     files = _collect_files(targets, skip_binary, follow_symlinks,
                            exclude_patterns, max_file_size)
@@ -1074,7 +1223,7 @@ def scan_paths(
 
     if workers <= 1 or total <= 1:
         for f in files:
-            findings.extend(scan_file(f, min_severity, high_entropy_scan, decode_base64))
+            findings.extend(scan_file(f, min_severity, high_entropy_scan, decode_base64, decode_hex, extract_endpoints_flag))
             done += 1
             if show_progress and done % max(1, total // 20) == 0:
                 print(color(f"\r  [{done}/{total}] files scanned…", GREY),
@@ -1084,7 +1233,7 @@ def scan_paths(
     else:
         with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = {
-                exe.submit(scan_file, f, min_severity, high_entropy_scan, decode_base64): f
+                exe.submit(scan_file, f, min_severity, high_entropy_scan, decode_base64, decode_hex, extract_endpoints_flag): f
                 for f in files
             }
             for fut in as_completed(futures):
@@ -1103,6 +1252,212 @@ def scan_paths(
             print(color(f"\r  [{total}/{total}] files scanned.      ", GREY), file=sys.stderr)
 
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 99), f.file, f.line))
+    return findings
+
+
+def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
+    """
+    Merge findings with identical (rule, secret) into one finding.
+    The merged finding keeps the first occurrence's file/line but
+    adds an 'also_in' count to the context.
+    """
+    seen: dict[tuple, Finding] = {}
+    counts: dict[tuple, int] = {}
+
+    for f in findings:
+        key = (f.rule, f.secret)
+        if key not in seen:
+            seen[key] = f
+            counts[key] = 1
+        else:
+            counts[key] += 1
+
+    result = []
+    for key, f in seen.items():
+        n = counts[key]
+        if n > 1:
+            import dataclasses
+            f = dataclasses.replace(
+                f,
+                context=f"{f.context}  [also found in {n - 1} other file(s)]"
+            )
+        result.append(f)
+
+    result.sort(key=lambda x: (SEVERITY_ORDER.get(x.severity, 99), x.file, x.line))
+    return result
+
+
+# ──────────────────────────────────────────────
+# .syckignore support
+# ──────────────────────────────────────────────
+
+def _finding_fingerprint(f: Finding) -> str:
+    """Stable SHA256 fingerprint for a finding."""
+    import hashlib
+    raw = f"{f.rule}:{f.secret[:60]}:{Path(f.file).name}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def load_ignore_list(path: Path | None = None) -> set[str]:
+    """Load fingerprints from .syckignore in cwd or explicit path."""
+    candidates = [Path(".syckignore")]
+    if path:
+        candidates.insert(0, path)
+    for p in candidates:
+        if p.exists():
+            lines = p.read_text(encoding="utf-8").splitlines()
+            return {
+                line.split("#")[0].strip()
+                for line in lines
+                if line.strip() and not line.startswith("#")
+            }
+    return set()
+
+
+def filter_ignored(findings: list[Finding],
+                   ignore: set[str]) -> list[Finding]:
+    if not ignore:
+        return findings
+    return [f for f in findings if _finding_fingerprint(f) not in ignore]
+
+
+# ──────────────────────────────────────────────
+# Git history scanning
+# ──────────────────────────────────────────────
+
+def scan_git_history(repo_path: Path, min_severity: str = "LOW",
+                     workers: int = 4) -> list[Finding]:
+    """
+    Walk all commits in the git repo at repo_path, extract file contents
+    from each commit, and run syck rules against them.
+    Only scans commits that touched files matching TEXT_EXTENSIONS.
+    """
+    import subprocess
+    import tempfile
+
+    findings: list[Finding] = []
+
+    # Get all commit hashes
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "log",
+             "--all", "--format=%H", "--diff-filter=AM"],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode != 0:
+            print(color(f"[!] git log failed: {result.stderr[:200]}", YELLOW),
+                  file=sys.stderr)
+            return findings
+        commits = [h.strip() for h in result.stdout.splitlines() if h.strip()]
+    except Exception as e:
+        print(color(f"[!] git history scan error: {e}", YELLOW), file=sys.stderr)
+        return findings
+
+    print(color(f"[*] scanning git history: {len(commits)} commit(s)…", GREY),
+          file=sys.stderr)
+
+    seen_secrets: set[tuple] = set()
+
+    for commit in commits:
+        # List files changed in this commit
+        try:
+            ls = subprocess.run(
+                ["git", "-C", str(repo_path), "diff-tree",
+                 "--no-commit-id", "-r", "--name-only", commit],
+                capture_output=True, text=True, timeout=30
+            )
+            files_in_commit = [f.strip() for f in ls.stdout.splitlines() if f.strip()]
+        except Exception:
+            continue
+
+        for filepath in files_in_commit:
+            suffix = Path(filepath).suffix.lower()
+            if suffix not in TEXT_EXTENSIONS:
+                continue
+            try:
+                cat = subprocess.run(
+                    ["git", "-C", str(repo_path), "show", f"{commit}:{filepath}"],
+                    capture_output=True, text=True, timeout=15, errors="replace"
+                )
+                if cat.returncode != 0:
+                    continue
+                content = cat.stdout
+            except Exception:
+                continue
+
+            # Write to temp file and scan
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=Path(filepath).suffix,
+                delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(content)
+                tmp_path = Path(tmp.name)
+
+            try:
+                file_findings = scan_file(tmp_path, min_severity)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+            for f in file_findings:
+                dedup_key = (f.rule, f.secret[:40])
+                if dedup_key not in seen_secrets:
+                    seen_secrets.add(dedup_key)
+                    findings.append(Finding(
+                        file=f"git:{commit[:8]}:{filepath}",
+                        line=f.line,
+                        rule=f.rule,
+                        severity=f.severity,
+                        secret=f.secret,
+                        context=f.context,
+                        entropy=f.entropy,
+                    ))
+
+    return findings
+
+
+# ──────────────────────────────────────────────
+# Endpoint extraction
+# ──────────────────────────────────────────────
+
+ENDPOINT_PATTERNS = [
+    re.compile(r"""['"]((?:/api|/v\d+|/internal|/admin|/dashboard|/graphql|/rest)(?:/[a-zA-Z0-9_\-{}:]+){1,6})['""]"""),
+    re.compile(r"""['"](/[a-z0-9_\-]+/(?:user|account|admin|auth|login|token|password|key|secret|config|setting)[a-z0-9_/\-]*)['""]""", re.I),
+    re.compile(r"""(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*['"](https?://[^'"]+)['""]"""),
+    re.compile(r"""(?:url|endpoint|baseURL|apiURL)\s*[:=]\s*['"](https?://[^'"]{10,})['""]""", re.I),
+    re.compile(r"""(wss?://[a-zA-Z0-9\-._]+(?:/[a-zA-Z0-9_/\-]*)?)"""),  # WebSocket URLs
+]
+
+GRAPHQL_PATTERN = re.compile(
+    r"""['"]((?:https?://[^'"]+)?/graphql(?:/[a-zA-Z0-9_\-]*)?)['""]""", re.I
+)
+
+
+def extract_endpoints(path: Path, content: str) -> list[Finding]:
+    """Extract API endpoints and URLs from source files."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    lines = content.splitlines()
+    for lineno, line in enumerate(lines, start=1):
+        for pattern in ENDPOINT_PATTERNS + [GRAPHQL_PATTERN]:
+            for m in pattern.finditer(line):
+                endpoint = m.group(1)
+                if endpoint in seen or len(endpoint) < 5:
+                    continue
+                # Skip obvious static assets
+                if any(endpoint.endswith(ext) for ext in
+                       (".png", ".jpg", ".gif", ".css", ".ico", ".woff", ".svg")):
+                    continue
+                seen.add(endpoint)
+                findings.append(Finding(
+                    file=str(path),
+                    line=lineno,
+                    rule="endpoint",
+                    severity="INFO",
+                    secret=endpoint,
+                    context=line.strip()[:200],
+                    entropy=0.0,
+                ))
     return findings
 
 
@@ -1130,7 +1485,7 @@ def _summary_lines(findings: list[Finding]) -> list[str]:
     lines = [color("\n── Summary ──────────────────────────────", BOLD)]
     lines.append(f"  Files with findings : {color(str(files_hit), YELLOW)}")
     lines.append(f"  Total findings      : {color(str(total), RED if total else GREEN)}")
-    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
         n = counts.get(sev, 0)
         if n:
             lines.append(f"    {sev:<10}  {n}")
@@ -1250,7 +1605,7 @@ def format_markdown(findings: list[Finding], redact_secrets: bool = False) -> st
     lines.append("")
     lines.append(f"- **Files with findings:** {files_hit}")
     lines.append(f"- **Total findings:** {len(findings)}")
-    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
         n = counts.get(sev, 0)
         if n:
             lines.append(f"- **{sev}:** {n}")
@@ -1305,10 +1660,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .summary {{ display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }}
   .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px;
            padding: 10px 14px; font-size: 0.95em; }}
-  .CRITICAL {{ color: #f85149; font-weight: 700; }}
-  .HIGH     {{ color: #d29922; font-weight: 600; }}
-  .MEDIUM   {{ color: #58a6ff; }}
-  .LOW      {{ color: #8b949e; }}
+   .CRITICAL {{ color: #f85149; font-weight: 700; }}
+   .HIGH     {{ color: #d29922; font-weight: 600; }}
+   .MEDIUM   {{ color: #58a6ff; }}
+   .LOW      {{ color: #8b949e; }}
+   .INFO     {{ color: #3fb950; }}
   table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
   th, td {{ text-align: left; padding: 6px 10px; border-bottom: 1px solid #21262d;
             font-size: 0.9em; vertical-align: top; }}
@@ -1339,7 +1695,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 def format_html(findings: list[Finding], redact_secrets: bool = False) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
 
@@ -1356,7 +1712,7 @@ def format_html(findings: list[Finding], redact_secrets: bool = False) -> str:
             files.setdefault(f.file, []).append(f)
 
         parts: list[str] = ['<div class="summary">']
-        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
             n = counts[sev]
             parts.append(f'<div class="card {sev}">{sev}: {n}</div>')
         parts.append(f'<div class="card">Files: {len(files)}</div>')
@@ -1469,7 +1825,7 @@ EXAMPLES:
                         "URLs (http://, https://) are downloaded to a "
                         "temp file, scanned, then deleted. "
                         "(default: current directory)")
-    p.add_argument("--severity", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+    p.add_argument("--severity", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                    default="LOW", help="Minimum severity to report (default: LOW)")
     p.add_argument("--format", choices=list(FORMATTERS.keys()),
                    default="text", help="Output format (default: text)")
@@ -1487,6 +1843,12 @@ EXAMPLES:
     p.add_argument("--no-decode-base64", action="store_false",
                    dest="decode_base64",
                    help="Disable base64 decode and re-scan of found strings")
+    p.add_argument("--decode-hex", action="store_true",
+                   default=False,
+                   help="Decode hex-encoded strings and re-scan for secrets")
+    p.add_argument("--no-decode-hex", action="store_false",
+                   dest="decode_hex",
+                   help="Disable hex decode and re-scan")
     p.add_argument("--follow-symlinks", action="store_true",
                    help="Follow symlinks")
     p.add_argument("--no-skip-binary", action="store_true",
@@ -1513,6 +1875,19 @@ EXAMPLES:
                         "~/.config/syck/config.json)")
     p.add_argument("--progress", action="store_true",
                    help="Print a one-line progress message to stderr")
+    p.add_argument("--no-dedup", action="store_true",
+                   help="Show all findings including duplicates across files")
+    p.add_argument("--ignore-file", metavar="FILE",
+                   help="Path to ignore file (default: ./.syckignore)")
+    p.add_argument("--add-ignore", metavar="FINGERPRINT",
+                   help="Add a finding fingerprint to .syckignore and exit")
+    p.add_argument("--endpoints", action="store_true",
+                   help="Also extract API endpoints and URLs from source files")
+    p.add_argument("--git-history", action="store_true",
+                   help="Also scan git commit history for secrets in deleted files "
+                        "(requires git in PATH, run from inside a repo)")
+    p.add_argument("--validate", action="store_true",
+                   help="Verify found secrets against provider APIs (zero-dependency)")
     p.add_argument("--list-rules", action="store_true",
                    help="Print all built-in rules and exit")
     return p
@@ -1649,14 +2024,54 @@ def main(argv: list[str]) -> int:
             min_severity=args.severity,
             high_entropy_scan=not args.no_entropy,
             decode_base64=args.decode_base64,
+            decode_hex=args.decode_hex,
             exclude_patterns=exclude_patterns,
             workers=max(1, args.workers),
             max_file_size=args.max_file_size,
             progress=args.progress,
+            extract_endpoints_flag=args.endpoints,
         )
     finally:
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Scan git history if requested
+    if args.git_history:
+        for target in targets:
+            if (target / ".git").exists() or target.name == ".git":
+                repo = target if (target / ".git").exists() else target.parent
+                print(color(f"[*] scanning git history of {repo}…", GREY), file=sys.stderr)
+                findings.extend(scan_git_history(repo, args.severity, max(1, args.workers)))
+
+    if not args.no_dedup:
+        findings = deduplicate_findings(findings)
+
+    # Handle --add-ignore: add a fingerprint to .syckignore and exit
+    if args.add_ignore:
+        ignore_path = Path(args.ignore_file) if args.ignore_file else Path(".syckignore")
+        fingerprint = args.add_ignore.strip()
+        with ignore_path.open("a", encoding="utf-8") as f:
+            f.write(fingerprint + "\n")
+        print(color(f"[+] added {fingerprint} to {ignore_path}", GREEN))
+        return 0
+
+    # Filter findings using .syckignore
+    ignore = load_ignore_list(Path(args.ignore_file) if args.ignore_file else None)
+    if ignore:
+        findings = filter_ignored(findings, ignore)
+
+    # Validate secrets against provider APIs if requested
+    if args.validate and findings:
+        try:
+            from syck_validate import validate_findings
+            print(color("[*] validating secrets against provider APIs…", CYAN), file=sys.stderr)
+            validation = validate_findings(findings)
+            for (rule, secret_prefix), result in validation.items():
+                icon = color("[LIVE]", RED + BOLD) if result.valid else color("[DEAD]", GREY)
+                print(f"  {icon} {rule}: {result.detail}", file=sys.stderr)
+        except ImportError:
+            print(color("[!] syck_validate.py not found (expected alongside syck.py)", YELLOW),
+                  file=sys.stderr)
 
     formatter = FORMATTERS[args.format]
     if args.format == "text":

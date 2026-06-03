@@ -1,0 +1,1 @@
+var Key="pplx-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890ABCDEFGHIJK"
