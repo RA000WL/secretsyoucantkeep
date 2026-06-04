@@ -5,10 +5,6 @@
 > bundles, repos, and recon output. Prints secrets **in full** so you
 > can paste them straight into a report.
 
-The repo is called `secretsyoucantkeep` (yes, with that name — the GitHub
-repo URL is `github.com/RA000WL/secretsyoucantkeep`), but the scanner
-binary is just `syck.py` and is invoked as `syck` for short.
-
 Part of a two-script toolkit:
 
 | Script | Short | Role |
