@@ -1,0 +1,58 @@
+name: syck secret scan
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for --git-history
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install syck
+        run: |
+          pip install aiohttp  # optional, for faster URL scanning
+          # syck is zero-dependency — just needs the script
+          echo "${{ github.workspace }}" >> $GITHUB_PATH
+
+      - name: Scan for secrets
+        id: scan
+        run: |
+          python syck.py . \
+            --format sarif \
+            --redact \
+            --severity HIGH \
+            --fail-on CRITICAL \
+            --git-history \
+            -o results.sarif || code=$?
+          echo "exit_code=${code:-0}" >> $GITHUB_OUTPUT
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: syck
+
+      - name: Report summary
+        if: always()
+        run: |
+          python syck.py . --severity HIGH --format markdown -o syck-report.md
+          echo "## syck scan results" >> $GITHUB_STEP_SUMMARY
+          cat syck-report.md >> $GITHUB_STEP_SUMMARY
