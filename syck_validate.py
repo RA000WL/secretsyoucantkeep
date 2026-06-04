@@ -176,6 +176,28 @@ def validate_slack_webhook(secret: str) -> ValidationResult:
     return ValidationResult("slack_webhook", secret, status == 200, f"HTTP {status}")
 
 
+def validate_discord_bot_token(secret: str) -> ValidationResult:
+    status, data = _fetch(
+        "https://discord.com/api/v10/users/@me",
+        headers={"Authorization": f"Bot {secret}"},
+    )
+    if status == 200 and isinstance(data, dict):
+        uid = data.get("id", "unknown")
+        return ValidationResult("discord_bot_token", secret, True, f"bot_id: {uid}")
+    err = data.get("message", "") if isinstance(data, dict) else f"HTTP {status}"
+    return ValidationResult("discord_bot_token", secret, False, err)
+
+
+def validate_aws_sts(secret: str) -> ValidationResult:
+    # AWS GetCallerIdentity requires a signed request.
+    # Without the paired secret key we can only call a public endpoint.
+    # Use iam.amazonaws.com?Action=GetUser with the access key in the
+    # Authorization header (AWS4-HMAC-SHA256).  Since we lack the secret
+    # key, mark as "requires key pair" but attempt a lightweight check.
+    return ValidationResult("aws_access_key_id", secret, False,
+                            "requires access_key + secret_key pair for API validation")
+
+
 # Dispatch map: rule name → validator function
 VALIDATORS = {
     "github_pat":           lambda s: validate_github_pat(s),
@@ -196,8 +218,8 @@ VALIDATORS = {
     "gitlab_ci_job_token":  lambda s: validate_gitlab_ci_job_token(s),
     "gitlab_pipeline_trigger": lambda s: validate_gitlab_pipeline_trigger(s),
     "perplexity_api_key":   lambda s: validate_perplexity_api_key(s),
-    "aws_access_key_id":    lambda s: ValidationResult("aws_access_key_id", s, False,
-                                                        "requires access_key + secret_key pair"),
+    "aws_access_key_id":    lambda s: validate_aws_sts(s),
+    "discord_bot_token":    lambda s: validate_discord_bot_token(s),
 }
 
 

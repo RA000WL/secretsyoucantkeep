@@ -1,0 +1,1 @@
+redis=redis://default:pass@cache:6379/0

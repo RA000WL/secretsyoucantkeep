@@ -1,0 +1,158 @@
+[
+  {
+    "file": "cases/01_aws_access_key.txt",
+    "type": "aws_access_key"
+  },
+  {
+    "file": "cases/02_github_pat.txt",
+    "type": "github_pat"
+  },
+  {
+    "file": "cases/03_gitlab_pat.txt",
+    "type": "gitlab_pat"
+  },
+  {
+    "file": "cases/04_stripe_live.txt",
+    "type": "stripe_live"
+  },
+  {
+    "file": "cases/05_slack_token.txt",
+    "type": "slack_token"
+  },
+  {
+    "file": "cases/06_google_api.txt",
+    "type": "google_api"
+  },
+  {
+    "file": "cases/07_openai.txt",
+    "type": "openai"
+  },
+  {
+    "file": "cases/08_anthropic.txt",
+    "type": "anthropic"
+  },
+  {
+    "file": "cases/09_hf.txt",
+    "type": "hf"
+  },
+  {
+    "file": "cases/10_groq.txt",
+    "type": "groq"
+  },
+  {
+    "file": "cases/11_perplexity.txt",
+    "type": "perplexity"
+  },
+  {
+    "file": "cases/12_digitalocean.txt",
+    "type": "digitalocean"
+  },
+  {
+    "file": "cases/13_vercel.txt",
+    "type": "vercel"
+  },
+  {
+    "file": "cases/14_linear.txt",
+    "type": "linear"
+  },
+  {
+    "file": "cases/15_newrelic.txt",
+    "type": "newrelic"
+  },
+  {
+    "file": "cases/16_vault.txt",
+    "type": "vault"
+  },
+  {
+    "file": "cases/17_docker_pat.txt",
+    "type": "docker_pat"
+  },
+  {
+    "file": "cases/18_square.txt",
+    "type": "square"
+  },
+  {
+    "file": "cases/19_mapbox.txt",
+    "type": "mapbox"
+  },
+  {
+    "file": "cases/20_dropbox.txt",
+    "type": "dropbox"
+  },
+  {
+    "file": "cases/21_postgres.txt",
+    "type": "postgres"
+  },
+  {
+    "file": "cases/22_mongo.txt",
+    "type": "mongo"
+  },
+  {
+    "file": "cases/23_mysql.txt",
+    "type": "mysql"
+  },
+  {
+    "file": "cases/24_redis.txt",
+    "type": "redis"
+  },
+  {
+    "file": "cases/25_jwt.txt",
+    "type": "jwt"
+  },
+  {
+    "file": "cases/26_rsa_key.txt",
+    "type": "rsa_key"
+  },
+  {
+    "file": "cases/27_shopify.txt",
+    "type": "shopify"
+  },
+  {
+    "file": "cases/28_npm.txt",
+    "type": "npm"
+  },
+  {
+    "file": "cases/29_azure_conn.txt",
+    "type": "azure_conn"
+  },
+  {
+    "file": "cases/30_notion.txt",
+    "type": "notion"
+  },
+  {
+    "file": "cases/31_algolia.txt",
+    "type": "algolia"
+  },
+  {
+    "file": "cases/32_doppler.txt",
+    "type": "doppler"
+  },
+  {
+    "file": "cases/33_deepseek.txt",
+    "type": "deepseek"
+  },
+  {
+    "file": "cases/34_xai.txt",
+    "type": "xai"
+  },
+  {
+    "file": "cases/35_fireworks.txt",
+    "type": "fireworks"
+  },
+  {
+    "file": "cases/36_elevenlabs.txt",
+    "type": "elevenlabs"
+  },
+  {
+    "file": "cases/37_runway.txt",
+    "type": "runway"
+  },
+  {
+    "file": "cases/38_kimi.txt",
+    "type": "kimi"
+  },
+  {
+    "file": "cases/39_tencent.txt",
+    "type": "tencent"
+  }
+]

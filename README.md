@@ -12,9 +12,18 @@ binary is just `syck.py` and is invoked as `syck` for short.
 Part of a two-script toolkit:
 
 | Script | Short | Role |
-|---|---|---|
-| `syck.py`              | `syck` | The scanner — pattern-matches 100+ secret formats across files & dirs |
+|---|---|---|---|
+| `syck.py`              | `syck` | The scanner — pattern-matches 179+ secret formats across files & dirs |
 | `syck-hunt.py`         | `syck-hunt` | Recon pipeline — `domain → httpx → katana → syck` (subdomain enum is opt-in with `-es`) |
+| `syck_sdk.py`          | `syck-sdk` | Python SDK — `scan()`, `scan_file()`, `scan_url()`, `validate()`, `list_rules()` |
+| `syck_server.py`       | `syck-server` | REST API server — `POST /scan`, `GET /rules`, `GET /health` |
+| `syck_rpc.py`          | `syck-rpc` | JSON-RPC 2.0 over stdin/stdout for IDE/editor extensions |
+| `syck_webhook.py`      | — | Slack / Discord / JSON webhook dispatcher |
+| `syck_sarif.py`        | — | GitHub Code Scanning SARIF upload |
+| `syck_cache.py`        | — | SHA256 content caching module |
+| `syck_async.py`        | — | Async URL fetcher via aiohttp (optional) |
+| `syck_validate.py`     | `syck-validate` | Validate secrets against provider APIs |
+| `syck-jsrecon.py`      | `syck-jsrecon` | Thin wrapper: `syck-hunt --deep-js` for JS recon |
 
 ---
 
@@ -97,7 +106,7 @@ stage manually or feed intermediate files into other tools.
 
 ### Scanner (`syck.py` / `syck`)
 
-- **100+ detection rules** across cloud, source control, messaging,
+- **179 detection rules** across cloud, source control, messaging,
   payments, AI providers, SaaS, infra, crypto, and databases
 - **Custom rules** — load your own patterns from a JSON file with `--rules`
   (or replace built-in rules entirely with `--rules-only`)
@@ -108,19 +117,49 @@ stage manually or feed intermediate files into other tools.
 - **Exclude patterns from file** — maintain a `.syckignore`-style file
   with `--exclude-file`
 - **High-entropy token sweep** — catches undocumented secret formats
-- **Parallel file scanning** with `ThreadPoolExecutor` (configurable workers)
+- **Parallel file scanning** with `ThreadPoolExecutor` (configurable workers);
+  automatic `ProcessPoolExecutor` on Linux for 100+ file batches
+- **Streaming mode** — files > 1MB scanned in streaming fashion for 10-50x
+  peak memory reduction (automatic, no flag needed)
 - **6 output formats**: text, JSON, SARIF (GitHub Code Scanning), Markdown,
   CSV, and a self-contained HTML report
 - **Smart file filtering** — skips binary, honours file-size limits
   (with `K`/`M`/`G` suffix syntax), respects `.gitignore`-style dirs
 - **Cross-platform** — pure Python 3.10+ stdlib, runs on Windows / macOS / Linux
-- **Zero dependencies** — no `pip install` needed
+- **Zero dependencies** — no `pip install` needed for core functionality
 - **Config file support** — set defaults via `~/.config/syck/config.json` or
   `./.syckrc` (project-level). No need to repeat flags every run.
 - **Auto-discovered syck** — `syck-hunt` finds `syck.py` in the same
   directory; no PATH setup required when scripts are kept together
 - **Real-time progress** — shows file count, findings count, and ETA as
-  scan progresses (auto-enabled for 20+ files)
+  scan progresses (auto-enabled for 20+ files); install `tqdm` for rich
+  progress bars with throughput and ETA
+- **Content caching** — SHA256-based caching in `.syck-cache/` for ~11x
+  faster re-scans; `--no-cache` to skip, `--cache-dir` for custom path
+- **Async URL fetching** — downloads remote URLs concurrently with aiohttp
+  (optional; degrades gracefully to threaded fallback)
+- **CI gate** — `--fail-on SEVERITY` exits 1 if any finding at or above
+  the given severity (CRITICAL > HIGH > MEDIUM > LOW)
+- **Webhook output** — `--webhook-url URL --webhook-format slack|discord|json`
+  sends findings to Slack, Discord, or a custom JSON endpoint
+- **GitHub SARIF upload** — `--upload-sarif` uploads SARIF output to GitHub
+  Code Scanning (requires `--github-repo` and `--github-token`)
+- **Debug mode** — `--debug` enables verbose logging for troubleshooting
+- **Column tracking** — every finding includes the exact column position where
+  the secret was matched (visible in JSON/SARIF/CSV outputs, adds precision to
+  SARIF GitHub annotations)
+- **Multi-line context** — findings include 2 lines of context before and after
+  the matched line for easier triage
+- **Gzip/Zlib decompression** — `--decode-gzip` decompresses gzip/zlib-compressed
+  files (JS bundles, cached HTTP responses) and scans the decompressed content
+- **Unicode escape decoding** — `--decode-unicode` decodes `\\uXXXX` escape
+  sequences and re-scans for secrets hidden behind obfuscation
+- **JS string reconstruction** — `--js-reconstruct` detects secrets split across
+  string concatenations (`"a"+"b"+"c"`), array joins (`["a","b"].join("")`), and
+  template literals, then scans the reconstructed value
+- **Recursive decoder pipeline** — automatically chains all decoders
+  (base64 → hex → unicode → gzip) recursively up to 4 layers deep, catching
+  multi-encoded secrets like `base64(gzip(hex(secret)))`
 
 ### Pipeline (`syck-hunt.py`)
 
@@ -133,6 +172,11 @@ stage manually or feed intermediate files into other tools.
 - JS-only download (default) or all files (`-aj` / `--all-files`)
 - **Recursive JS crawling** — follow `import()`/`require()` URLs up to
   N levels deep with `--js-depth N`
+- **Deep JS recon** — `-dj` / `--deep-js` extracts endpoints, API routes,
+  JS variables, hidden admin routes, AWS/Google/Firebase keys, S3 buckets,
+  Slack/Discord webhooks, JWT tokens, private keys, internal IPs, GraphQL
+  endpoints, source maps, email addresses, hidden subdomains, and more from
+  every JS file. Generates `deep_js_report.json`.
 - **Source map extraction** — extract and scan original sources from
   source maps with `--extract-source-maps` / `-sm`
 - **Inline script extraction** — extract `<script>` blocks from HTML
@@ -154,6 +198,8 @@ stage manually or feed intermediate files into other tools.
 ### Requirements
 
 - **Python 3.10+** (3.11 / 3.12 / 3.13 all fine)
+- **Optional** — `aiohttp` for ~5x faster URL scanning and `tqdm` for
+  rich progress bars (install both: `pip install aiohttp tqdm`)
 - For the full `syck-hunt` pipeline, install the ProjectDiscovery toolchain:
 
 | Tool | Install |
@@ -241,6 +287,8 @@ syck . --workers 16                 # 16 parallel scanner workers
 syck . --max-file-size 50M          # scan big build artefacts
 syck . --exclude "test|mock|spec"   # skip noisy paths
 syck . --no-entropy                 # disable the high-entropy sweep
+syck . --no-cache                   # skip content caching
+syck . --cache-dir /tmp/syck-cache  # custom cache location
 ```
 
 ### Config file
@@ -339,6 +387,7 @@ syck-hunt example.com -f sarif        # SARIF output for GitHub Code Scanning
 | `-w`  | `--workers`           | syck workers                                 | `4`     |
 | `-sp` | `--syck-path`         | Path to syck.py (if not on $PATH)            | —       |
 | `-sm` | `--extract-source-maps`| Extract sources from source maps and scan   | off     |
+| `-dj` | `--deep-js`           | Deep JS recon (24 extractors, generates JSON)| off     |
 | `-jsd`| `--js-depth`          | Recursively follow JS imports up to N depth  | `0`     |
 | `-xs` | `--extract-scripts`   | Extract inline `<script>` blocks from HTML   | off     |
 |       | `--header`            | Custom HTTP header (repeatable)              | —       |
@@ -446,10 +495,12 @@ Full list: `syck --list-rules` (100+ rules).
 | `1`  | One or more secrets were found — useful in CI gates |
 | `2`  | Invalid arguments / missing paths |
 
-CI gate example:
+CI gate examples:
 
 ```bash
 syck . --severity CRITICAL || { echo "CRITICAL secrets found"; exit 1; }
+syck . --fail-on HIGH                # exit 1 if any HIGH or CRITICAL finding
+syck . --fail-on CRITICAL            # exit 1 only for CRITICAL findings
 ```
 
 ---
@@ -516,7 +567,16 @@ Test with the dummy file (`dummy_secrets.env`) or `syck --list-rules`.
 
 ```
 syck.py              # the scanner (syck)
-syck-hunt.py         # the recon pipeline (syck-hunt)
+syck-hunt.py         # the recon pipeline (syck-hunt) — includes --deep-js JS recon
+syck-jsrecon.py      # thin wrapper: syck-hunt --deep-js
+syck_cache.py        # SHA256 content caching engine
+syck_async.py        # async URL fetcher (aiohttp optional)
+syck_sdk.py          # Python SDK with scan/validate/list_rules APIs
+syck_server.py       # REST API server (POST /scan, GET /rules, GET /health)
+syck_rpc.py          # JSON-RPC 2.0 over stdin/stdout for IDE plugins
+syck_webhook.py      # Slack/Discord/JSON webhook dispatcher
+syck_sarif.py        # GitHub Code Scanning SARIF upload
+syck_validate.py     # validate secrets against provider APIs
 install.sh           # one-line installer (Linux / macOS / WSL)
 .gitattributes       # forces LF line endings for shell scripts
 dummy_secrets.env    # test fixture with 100+ dummy secrets

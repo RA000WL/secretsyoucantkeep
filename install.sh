@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# install.sh — install syck + syck-hunt into ~/bin and update shell rc files.
+# install.sh — install syck + syck-hunt + syck-server + syck-rpc into
+# ~/bin and update shell rc files.  Also offers to install optional
+# Python dependencies (aiohttp, tqdm) for extra speed / UX.
 #
 # Idempotent: safe to run multiple times.  Skips work that's already done.
 # Cross-shell: updates both .zshrc and .bashrc if they exist.
@@ -9,6 +11,7 @@
 #   ./install.sh              # install
 #   ./install.sh --uninstall  # undo the install
 #   ./install.sh --prefix DIR # install into a different directory
+#   ./install.sh --no-deps    # skip optional dependency prompt
 
 set -euo pipefail
 
@@ -17,6 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYCK_PY="$SCRIPT_DIR/syck.py"
 SYCK_HUNT_PY="$SCRIPT_DIR/syck-hunt.py"
 SYCK_VALIDATE_PY="$SCRIPT_DIR/syck_validate.py"
+SYCK_SERVER_PY="$SCRIPT_DIR/syck_server.py"
+SYCK_RPC_PY="$SCRIPT_DIR/syck_rpc.py"
+SYCK_JSRECON_PY="$SCRIPT_DIR/syck-jsrecon.py"
 
 if [[ ! -f "$SYCK_PY" || ! -f "$SYCK_HUNT_PY" ]]; then
     echo "error: run this from the repo root (could not find syck.py / syck-hunt.py)" >&2
@@ -31,11 +37,13 @@ fi
 # ── options ──────────────────────────────────────────────────────
 PREFIX="${HOME}/bin"
 ACTION="install"
+SKIP_DEPS=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --uninstall) ACTION="uninstall" ;;
         --prefix)    PREFIX="$2"; shift ;;
         --prefix=*)  PREFIX="${1#*=}" ;;
+        --no-deps)   SKIP_DEPS=true ;;
         -h|--help)
             sed -n '2,12p' "$0"
             exit 0
@@ -48,7 +56,10 @@ done
 # ── uninstall ───────────────────────────────────────────────────
 if [[ "$ACTION" == "uninstall" ]]; then
     echo "Uninstalling from $PREFIX …"
-    rm -f "$PREFIX/syck" "$PREFIX/syck-hunt"
+    rm -f "$PREFIX/syck" "$PREFIX/syck-hunt" \
+          "$PREFIX/syck-validate" \
+          "$PREFIX/syck-server" "$PREFIX/syck-rpc" \
+          "$PREFIX/syck-jsrecon"
     echo "[+] removed shims"
     echo "[i] you may want to manually clean the PATH lines from your shell rc files:"
     echo "    $HOME/.zshrc  $HOME/.bashrc"
@@ -75,7 +86,9 @@ else
     "decode-hex": true,
     "progress": true,
     "redact": false,
-    "no-color": false
+    "no-color": false,
+    "no-cache": false,
+    "fail-on": "LOW"
 }
 CONFIG_EOF
     echo "[+] created $CONFIG_FILE"
@@ -97,11 +110,39 @@ write_shim "$PREFIX/syck-hunt"    "$SYCK_HUNT_PY"
 if [[ -f "$SYCK_VALIDATE_PY" ]]; then
     write_shim "$PREFIX/syck-validate" "$SYCK_VALIDATE_PY"
 fi
+if [[ -f "$SYCK_SERVER_PY" ]]; then
+    write_shim "$PREFIX/syck-server" "$SYCK_SERVER_PY"
+fi
+if [[ -f "$SYCK_RPC_PY" ]]; then
+    write_shim "$PREFIX/syck-rpc" "$SYCK_RPC_PY"
+fi
+if [[ -f "$SYCK_JSRECON_PY" ]]; then
+    write_shim "$PREFIX/syck-jsrecon" "$SYCK_JSRECON_PY"
+fi
 echo "[+] shims:"
 echo "    $PREFIX/syck"
 echo "    $PREFIX/syck-hunt"
 if [[ -f "$PREFIX/syck-validate" ]]; then
     echo "    $PREFIX/syck-validate"
+fi
+if [[ -f "$PREFIX/syck-server" ]]; then
+    echo "    $PREFIX/syck-server"
+fi
+if [[ -f "$PREFIX/syck-rpc" ]]; then
+    echo "    $PREFIX/syck-rpc"
+fi
+if [[ -f "$PREFIX/syck-jsrecon" ]]; then
+    echo "    $PREFIX/syck-jsrecon"
+fi
+
+# ── optional deps ────────────────────────────────────────────────
+if [[ "$SKIP_DEPS" == false ]]; then
+    echo
+    echo "[i] Optional Python packages improve speed & UX:"
+    echo "    pip install aiohttp    # ~5x faster URL scanning"
+    echo "    pip install tqdm       # rich progress bars with ETA"
+    echo "    pip install aiohttp tqdm  (both)"
+    echo
 fi
 
 # ── update shell rc files ───────────────────────────────────────
@@ -171,6 +212,10 @@ echo "  source ~/.profile     # for login shells (bash, sh)"
 echo "  source ~/.bashrc      # for interactive bash"
 echo
 echo "Verify with (works from a non-interactive shell too):"
-echo "  which syck       → $PREFIX/syck"
-echo "  which syck-hunt  → $PREFIX/syck-hunt"
-echo "  syck --help      → 'usage: syck'"
+echo "  which syck          → $PREFIX/syck"
+echo "  which syck-hunt     → $PREFIX/syck-hunt"
+echo "  which syck-jsrecon  → $PREFIX/syck-jsrecon"
+echo "  syck --help         → 'usage: syck'"
+echo
+echo "To install optional dependencies:"
+echo "  pip install aiohttp tqdm"

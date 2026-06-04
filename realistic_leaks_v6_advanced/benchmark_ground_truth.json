@@ -1,0 +1,29 @@
+[
+  {
+    "file": "bundles/main.bundle.js"
+  },
+  {
+    "file": "bundles/vendor.bundle.js"
+  },
+  {
+    "file": "obfuscated/base64.js"
+  },
+  {
+    "file": "obfuscated/hex.js"
+  },
+  {
+    "file": "obfuscated/unicode.js"
+  },
+  {
+    "file": "infra/prod.tf"
+  },
+  {
+    "file": "logs/app.log"
+  },
+  {
+    "file": "comments/todo.js"
+  },
+  {
+    "file": "sourcemaps/app.js.map"
+  }
+]
